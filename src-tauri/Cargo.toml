@@ -1,6 +1,6 @@
 [package]
 name = "videogen"
-version = "0.2.0"
+version = "0.2.1"
 description = "VideoGen - Khmer ghost story video generator"
 authors = ["VideoGen"]
 edition = "2021"
