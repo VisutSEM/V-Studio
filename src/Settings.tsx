@@ -1592,7 +1592,7 @@ export default function SettingsPage() {
 
               <div className="settings-card-right">
                 <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                  Version 0.1.0
+                  Version 0.2.0
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 4 }}>
