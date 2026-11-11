@@ -539,16 +539,12 @@ pub async fn get_voxcpm_setup_status(app: AppHandle) -> CmdResult<VoxCpmSetupSta
     let (has_nvidia, gpu_name, vram_mb) = detect_nvidia_gpu();
     let system_ram_mb = get_system_ram_mb();
     let has_recommended_gpu = has_nvidia && vram_mb >= 5400;
-    let has_enough_cpu_ram = system_ram_mb >= 15000;
-    let can_install = has_recommended_gpu || has_enough_cpu_ram;
+    let can_install = has_recommended_gpu;
 
     let hardware_warning = if !can_install {
-        Some(format!(
-            "Insufficient hardware detected (GPU: {}, {:.1} GB VRAM, {:.1} GB system RAM). VoxCPM 2 requires an NVIDIA GPU with >= 5.4 GB VRAM or a PC with >= 16 GB system RAM. Installation is blocked to prevent system freeze or memory crash.",
-            if has_nvidia { &gpu_name } else { "No dedicated NVIDIA GPU" },
-            vram_mb as f64 / 1024.0,
-            system_ram_mb as f64 / 1024.0
-        ))
+        Some(
+            "Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead.".to_string()
+        )
     } else {
         None
     };
@@ -577,7 +573,8 @@ pub async fn get_voxcpm_setup_status(app: AppHandle) -> CmdResult<VoxCpmSetupSta
         }
     }
 
-    let is_ready = server_running || (has_torch && has_voxcpm);
+    let has_model = VoxCpmManager::find_model(&app).is_some();
+    let is_ready = can_install && (server_running || has_model || (has_torch && has_voxcpm));
 
     let message = if server_running {
         format!(
@@ -587,7 +584,7 @@ pub async fn get_voxcpm_setup_status(app: AppHandle) -> CmdResult<VoxCpmSetupSta
     } else if is_ready {
         "VoxCPM 2 engine is installed and ready to start.".into()
     } else if !can_install {
-        "Your computer has insufficient memory (requires NVIDIA GPU with >= 5.4 GB VRAM or >= 16 GB system RAM). Please use Meta MMS or Edge TTS.".into()
+        "Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead.".into()
     } else if python_found && !has_voxcpm {
         "Python is detected, but VoxCPM 2 packages are not installed yet.".into()
     } else {
@@ -636,20 +633,12 @@ pub async fn setup_voxcpm_engine(
             );
         };
 
-        // 0. Hardware safety check: verify GPU VRAM or System RAM
-        let (has_nvidia, gpu_name, vram_mb) = detect_nvidia_gpu();
-        let system_ram_mb = get_system_ram_mb();
+        // 0. Hardware safety check: verify GPU VRAM
+        let (has_nvidia, _, vram_mb) = detect_nvidia_gpu();
         let has_recommended_gpu = has_nvidia && vram_mb >= 5400;
-        let has_enough_cpu_ram = system_ram_mb >= 15000;
-        let can_install = has_recommended_gpu || has_enough_cpu_ram;
 
-        if !can_install {
-            let err_msg = format!(
-                "Installation blocked: Low hardware specs detected ({}: {:.1} GB VRAM, {:.1} GB RAM). VoxCPM 2 requires an NVIDIA GPU with >= 5.4 GB VRAM or a PC with >= 16 GB system RAM. Please choose Meta MMS (Khmer CPU) or Edge TTS instead.",
-                if has_nvidia { &gpu_name } else { "No dedicated NVIDIA GPU" },
-                vram_mb as f64 / 1024.0,
-                system_ram_mb as f64 / 1024.0
-            );
+        if !has_recommended_gpu {
+            let err_msg = "Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead.".to_string();
             emit_progress("Hardware check failed", 0, &err_msg, false, Some(err_msg.clone()));
             bail!("{err_msg}");
         }

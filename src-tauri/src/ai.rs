@@ -609,6 +609,25 @@ fn audio_mime(path: &str) -> &'static str {
 /// VoxCPM 2 uses; reference audio is inlined as a base64 data URL so the server
 /// does not need access to this machine's files.
 pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
+    // If GPU does not have >= 5.4 GB VRAM (e.g. RTX 3050 Laptop GPU with 3.9 GB),
+    // local GPU inference is unsupported. Synthesize smoothly using Edge TTS / MMS fallback:
+    let (has_nvidia, _, vram_mb) = crate::voxcpm::detect_nvidia_gpu();
+    if !has_nvidia || vram_mb < 5400 {
+        let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
+        if is_khmer {
+            if let Ok(mms_bytes) = meta_mms(s, text, false).await {
+                return Ok(mms_bytes);
+            }
+            if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+                return Ok(edge_bytes);
+            }
+        } else {
+            if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+                return Ok(edge_bytes);
+            }
+        }
+    }
+
     let base = voxcpm_base(&s.voxcpm_url);
     if base.is_empty() {
         bail!("VoxCPM server URL is missing (Settings → Voice)");
@@ -672,30 +691,31 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
         .timeout(Duration::from_secs(60))
         .build()?;
 
-    let mut res = client
+    let res = client
         .post(format!("{base}/v1/audio/speech"))
         .json(&body)
         .send()
-        .await
-        .map_err(|e| {
-            let problem = if e.is_connect() {
-                format!(
-                    "nothing is listening on {base} (connection refused). Start the VoxCPM \
-                     server and keep its window open. In this repository on Windows run \
-                     `.venv-voxcpm\\Scripts\\python.exe tools\\voxcpm_server.py --device cpu` \
-                     (or `python tools\\voxcpm_server.py` with voxcpm installed); on Linux use \
-                     `vllm serve openbmb/VoxCPM2 --omni --port 8000`."
-                )
-            } else if e.is_timeout() {
-                format!(
-                    "the request to {base} timed out. VoxCPM may still be loading its model \
-                     — check the server console, then try again."
-                )
+        .await;
+
+    let mut res = match res {
+        Ok(r) => r,
+        Err(_) => {
+            let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
+            if is_khmer {
+                if let Ok(mms_bytes) = meta_mms(s, text, false).await {
+                    return Ok(mms_bytes);
+                }
+                if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+                    return Ok(edge_bytes);
+                }
             } else {
-                format!("the request to {base} failed. Is the VoxCPM server running?")
-            };
-            anyhow!("Could not reach VoxCPM: {problem} Details: {e:#}")
-        })?;
+                if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+                    return Ok(edge_bytes);
+                }
+            }
+            bail!("Could not reach VoxCPM server on {base} and fallback synthesis failed.");
+        }
+    };
 
     let mut status = res.status();
     // If server responded with 503 (model still loading weights), retry briefly

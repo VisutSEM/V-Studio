@@ -255,7 +255,10 @@ export default function SettingsPage() {
       "test_tts",
       lang === "km" ? "Preview Khmer" : "Preview English",
       s.tts_kind === "azure" ? keys.azure : s.tts_kind === "kiri_tts" ? keys.kiri : "",
-      () => `Playing ${lang === "km" ? "Khmer" : "English"} sample`,
+      () =>
+        s.tts_kind === "voxcpm" && !hasEnoughVram
+          ? `Playing ${lang === "km" ? "Khmer" : "English"} sample (via fallback: GPU has ${vramGb} GB VRAM, needs 5.4 GB)`
+          : `Playing ${lang === "km" ? "Khmer" : "English"} sample`,
       { text },
     );
   };
@@ -552,11 +555,11 @@ export default function SettingsPage() {
                       value={s.tts_kind}
                       onChange={(e) => set({ tts_kind: e.target.value as TtsKind })}
                     >
-                      <option value="meta_mms">Meta MMS (Local Offline, Instant Khmer — Recommended for 8GB RAM)</option>
-                      <option value="voxcpm">VoxCPM2 (Local AI Voice Cloning — Needs 16GB RAM / 8GB GPU)</option>
-                      <option value="azure">Azure Speech (Khmer &amp; English, Cloud API)</option>
-                      <option value="kiri_tts">Kiri TTS (Khmer AI, Cloud API)</option>
+                      <option value="voxcpm">VoxCPM2 (local, your GPU)</option>
                       <option value="edge_tts">Edge TTS (Free Cloud)</option>
+                      <option value="meta_mms">Meta MMS (Fast Offline Khmer)</option>
+                      <option value="azure">Azure Speech</option>
+                      <option value="kiri_tts">Kiri TTS (Khmer AI Cloud)</option>
                       <option value="gpt_sovits">GPT-SoVITS (Local Voice Clone)</option>
                     </select>
                   </div>
@@ -637,8 +640,8 @@ export default function SettingsPage() {
                       <span style={{ fontWeight: 600 }}>{gpuName}</span>
                       <span
                         style={{
-                          background: "#dcfce7",
-                          color: "#15803d",
+                          background: hasEnoughVram ? "#dcfce7" : "rgba(255, 255, 255, 0.08)",
+                          color: hasEnoughVram ? "#15803d" : "var(--text-secondary)",
                           padding: "3px 10px",
                           borderRadius: 6,
                           fontSize: 12,
@@ -655,6 +658,15 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
+                  {!hasEnoughVram ? (
+                    <div className="settings-info-box-dark">
+                      <Icon name="info" size={16} className="info-icon" />
+                      <span>
+                        Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead.
+                      </span>
+                    </div>
+                  ) : (
+                    <>
                   {/* Installer progress banner if downloading */}
                   {isInstalling && (
                     <div
@@ -761,7 +773,7 @@ export default function SettingsPage() {
                       </div>
 
                       <div>
-                        {setupStatus?.is_ready || true ? (
+                        {setupStatus?.is_ready ? (
                           <span
                             style={{
                               background: "#dcfce7",
@@ -990,6 +1002,8 @@ export default function SettingsPage() {
                       </button>
                     </div>
                   </div>
+                    </>
+                  )}
 
                   {/* Engine footer line */}
                   <div
