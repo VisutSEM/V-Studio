@@ -44,6 +44,8 @@ pub fn run() {
             voxcpm::start_voxcpm_server,
             voxcpm::stop_voxcpm_server,
             voxcpm::check_voxcpm_health,
+            voxcpm::verify_voxcpm_model,
+            voxcpm::delete_voxcpm_model,
             commands::create_project,
             commands::update_project,
             commands::list_projects,

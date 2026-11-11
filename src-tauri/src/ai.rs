@@ -719,6 +719,19 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
 
     if !status.is_success() {
         let err_text = res.text().await.unwrap_or_default();
+        let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
+        if is_khmer {
+            if let Ok(mms_bytes) = meta_mms(s, text, false).await {
+                return Ok(mms_bytes);
+            }
+            if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+                return Ok(edge_bytes);
+            }
+        } else {
+            if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+                return Ok(edge_bytes);
+            }
+        }
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || err_text.contains("model is still loading") {
             bail!("VoxCPM model is still loading weights into memory. Please wait a moment and try again, or switch to 'Meta MMS (Fast Offline)' in Settings for instant Khmer voice.");
         }

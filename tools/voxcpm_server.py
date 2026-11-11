@@ -621,11 +621,26 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as mms_exc:
                     log(f"MMS fallback error: {mms_exc}")
 
-            if _load_error is not None:
-                self._error(500, f"VoxCPM model could not load: {_load_error}")
-                return
-            self._error(503, "model is still loading - please wait a moment and try again")
-            return
+                try:
+                    log("Attempting Edge TTS Khmer fallback...")
+                    audio = synthesize_edge(payload)
+                    self._send(200, audio, "audio/mpeg", {"x-fallback-engine": "edge_tts"})
+                    log(f"  -> {len(audio):,} bytes MP3 (Edge Khmer fallback)")
+                    return
+                except Exception as edge_exc:
+                    log(f"Edge fallback error: {edge_exc}")
+            else:
+                try:
+                    log("Synthesizing English via Edge TTS fallback...")
+                    edge_payload = dict(payload)
+                    if not edge_payload.get("voice") or edge_payload.get("voice") == "default":
+                        edge_payload["voice"] = "en-US-JennyNeural"
+                    audio = synthesize_edge(edge_payload)
+                    self._send(200, audio, "audio/mpeg", {"x-fallback-engine": "edge_tts"})
+                    log(f"  -> {len(audio):,} bytes MP3 (Edge English fallback)")
+                    return
+                except Exception as edge_exc:
+                    log(f"Edge fallback error: {edge_exc}")
 
         log(
             "TTS %r (ref_audio=%s, ref_text=%s)"

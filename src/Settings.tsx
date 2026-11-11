@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, Settings as S, SettingsView, VoxCpmSetupStatus, VoxCpmSetupProgress, onVoxcpmSetupProgress } from "./api";
@@ -70,10 +70,6 @@ export default function SettingsPage() {
   const [testMsg, setTestMsg] = useState<TestMsg>(null);
   const [voxStatus, setVoxStatus] = useState<string>("checking");
   const [testVoiceText] = useState("ការសាកសំឡេង");
-  const [serverCheck, setServerCheck] = useState<{
-    loading: boolean;
-    result: { ok: boolean; status: string; message: string } | null;
-  }>({ loading: false, result: null });
   const [gpuInfo, setGpuInfo] = useState<{
     has_nvidia: boolean;
     gpu_name: string;
@@ -87,6 +83,33 @@ export default function SettingsPage() {
   const [isInstalling, setIsInstalling] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"latest" | "available" | null>("latest");
+  const [verifyingModel, setVerifyingModel] = useState(false);
+  const [newVoiceName, setNewVoiceName] = useState("");
+  const [customVoices, setCustomVoices] = useState<
+    Array<{
+      id: string;
+      name: string;
+      audioPath: string;
+      refText?: string;
+      lang: string;
+      isDefault?: boolean;
+    }>
+  >(() => {
+    try {
+      const stored = localStorage.getItem("vstudio_custom_voices");
+      if (stored) return JSON.parse(stored);
+    } catch (_) {}
+    return [
+      { id: "v1", name: "Mrr Set", audioPath: "", lang: "Khmer", isDefault: false },
+      { id: "v2", name: "Mrr rong", audioPath: "", lang: "Khmer", isDefault: true },
+    ];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("vstudio_custom_voices", JSON.stringify(customVoices));
+    } catch (_) {}
+  }, [customVoices]);
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
@@ -239,25 +262,15 @@ export default function SettingsPage() {
 
   const testVoxcpmServer = async () => {
     if (!s) return;
-    setServerCheck({ loading: true, result: null });
     try {
       const res = await invoke<{ ok: boolean; status: string; message: string }>(
         "check_voxcpm_health",
         { url: s.voxcpm_url || "http://127.0.0.1:8000" },
       );
-      setServerCheck({ loading: false, result: res });
       if (res.ok) setVoxStatus("ready");
       else if (res.status === "loading") setVoxStatus("starting");
       else setVoxStatus("stopped");
-    } catch (e) {
-      setServerCheck({
-        loading: false,
-        result: {
-          ok: false,
-          status: "unreachable",
-          message: String(e),
-        },
-      });
+    } catch (_) {
       setVoxStatus("stopped");
     }
   };
@@ -279,7 +292,6 @@ export default function SettingsPage() {
   const vramMb = setupStatus?.vram_mb ?? gpuInfo?.vram_mb ?? 0;
   const vramGb = vramMb > 0 ? (vramMb / 1024).toFixed(1) : "0.0";
   const systemRamMb = setupStatus?.system_ram_mb ?? 0;
-  const systemRamGb = systemRamMb > 0 ? (systemRamMb / 1024).toFixed(1) : "0.0";
   const hasEnoughVram = vramMb >= 5400;
   const hasEnoughCpuRam = systemRamMb >= 15000;
   const canInstall = setupStatus ? setupStatus.can_install : (hasEnoughVram || hasEnoughCpuRam);
@@ -308,6 +320,112 @@ export default function SettingsPage() {
       });
     } finally {
       setIsInstalling(false);
+    }
+  };
+
+  const handleVerifyModel = async () => {
+    setVerifyingModel(true);
+    try {
+      testVoxcpmServer();
+      const res = await api.verifyVoxcpmModel();
+      setMsg({ text: res.message, kind: "ok" });
+    } catch (e) {
+      setMsg({ text: `Model verification: ${String(e)}`, kind: "error" });
+    } finally {
+      setVerifyingModel(false);
+    }
+  };
+
+  const handleDeleteModel = async () => {
+    if (!confirm("Are you sure you want to delete the local model files to free disk space?")) return;
+    try {
+      await api.deleteVoxcpmModel();
+      setMsg({ text: "VoxCPM model files deleted successfully.", kind: "ok" });
+      const updated = await api.getVoxcpmSetupStatus();
+      setSetupStatus(updated);
+    } catch (e) {
+      setMsg({ text: `Could not delete model: ${String(e)}`, kind: "error" });
+    }
+  };
+
+  const handleMakeDefaultVoice = (id: string) => {
+    setCustomVoices((prev) =>
+      prev.map((v) => ({ ...v, isDefault: v.id === id }))
+    );
+    const selected = customVoices.find((v) => v.id === id);
+    if (selected && selected.audioPath) {
+      set({ voxcpm_ref_audio: selected.audioPath, voxcpm_ref_text: selected.refText || "" });
+    }
+    setMsg({ text: `Default voice set to "${selected?.name || ""}"`, kind: "ok" });
+  };
+
+  const handleListenVoice = (voice: { id: string; name: string; audioPath: string; lang: string }) => {
+    if (voice.audioPath) {
+      try {
+        const snd = new Audio(convertFileSrc(voice.audioPath));
+        snd.play().catch(() => {});
+        return;
+      } catch (_) {}
+    }
+    playPreview(voice.lang === "English" ? "en" : "km");
+  };
+
+  const handleEditVoice = (id: string) => {
+    const v = customVoices.find((x) => x.id === id);
+    if (!v) return;
+    const name = prompt("Edit voice name:", v.name);
+    if (name && name.trim()) {
+      setCustomVoices((prev) =>
+        prev.map((x) => (x.id === id ? { ...x, name: name.trim() } : x))
+      );
+    }
+  };
+
+  const handleDuplicateVoice = (id: string) => {
+    const v = customVoices.find((x) => x.id === id);
+    if (!v) return;
+    const copy = {
+      ...v,
+      id: "v_" + Date.now(),
+      name: `${v.name} (Copy)`,
+      isDefault: false,
+    };
+    setCustomVoices((prev) => [...prev, copy]);
+    setMsg({ text: `Duplicated voice "${v.name}"`, kind: "ok" });
+  };
+
+  const handleDeleteVoice = (id: string) => {
+    const v = customVoices.find((x) => x.id === id);
+    if (!v) return;
+    if (customVoices.length <= 1) {
+      setMsg({ text: "At least one voice profile must remain.", kind: "error" });
+      return;
+    }
+    setCustomVoices((prev) => prev.filter((x) => x.id !== id));
+    setMsg({ text: `Deleted voice "${v.name}"`, kind: "ok" });
+  };
+
+  const handleAddNewVoice = async () => {
+    const name = prompt("Enter a name for the new voice profile:", `Voice ${customVoices.length + 1}`);
+    if (!name || !name.trim()) return;
+    const vName = name.trim();
+    const useMic = confirm("Would you like to record with your Microphone? (Click OK for Mic, Cancel to choose an audio file)");
+    if (useMic) {
+      setNewVoiceName(vName);
+      setShowRecordModal(true);
+    } else {
+      pickAudio((path) => {
+        const newV = {
+          id: "v_" + Date.now(),
+          name: vName,
+          audioPath: path,
+          lang: "Khmer",
+          isDefault: true,
+        };
+        setCustomVoices((prev) => [...prev.map((x) => ({ ...x, isDefault: false })), newV]);
+        set({ voxcpm_ref_audio: path });
+        setMsg({ text: `Voice "${vName}" added successfully from file!`, kind: "ok" });
+      });
     }
   };
 
@@ -449,9 +567,7 @@ export default function SettingsPage() {
                       {s.tts_kind === "meta_mms"
                         ? "Meta MMS runs 100% offline on your CPU with zero wait (<1s per sentence). Lightweight and optimized for laptops with 8 GB RAM."
                         : s.tts_kind === "voxcpm"
-                          ? (systemRamMb < 15000 && !hasEnoughVram
-                              ? `Notice: Your PC has ${systemRamGb} GB RAM. VoxCPM 2 is a heavy 5 GB model. If VoxCPM takes time to warm up, V-Studio automatically generates Khmer narration via Meta MMS so preview and generation never fail. You can also select Meta MMS above for instant offline narration.`
-                              : "VoxCPM 2 generates high-fidelity cloned voices offline on your graphics card.")
+                          ? "Local voices run on your graphics card: free and offline. Install the model and make or choose a voice in \"Local voices\" below."
                           : s.tts_kind === "kiri_tts"
                             ? "Kiri TTS (kiritts.com) provides natural Khmer voices in the cloud with low latency."
                             : s.tts_kind === "azure"
@@ -502,35 +618,40 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
-                <div className="settings-card-right">
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                    <div className="gpu-badge-dark">
+                <div className="settings-card-right" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {/* GPU Badge */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                    <div
+                      className="gpu-badge-dark"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "8px 14px",
+                        borderRadius: 8,
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--border-subtle)",
+                      }}
+                    >
                       <Icon name="cpu" size={16} />
-                      <span>{gpuName}</span>
-                      <span className="vram-pill">{vramGb} GB video memory</span>
+                      <span style={{ fontWeight: 600 }}>{gpuName}</span>
+                      <span
+                        style={{
+                          background: "#dcfce7",
+                          color: "#15803d",
+                          padding: "2px 10px",
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {vramGb} GB video memory
+                      </span>
                     </div>
-                    {systemRamMb > 0 && (
-                      <div className="gpu-badge-dark">
-                        <Icon name="sparkles" size={15} />
-                        <span>System Memory</span>
-                        <span className="vram-pill">{systemRamGb} GB RAM</span>
-                      </div>
-                    )}
                   </div>
 
-                  <div className="settings-info-box-dark">
-                    <Icon name="info" size={16} className="info-icon" />
-                    <span>
-                      {hasEnoughVram
-                        ? `Local voices run best on a graphics card with at least 5.4 GB VRAM. Detected ${vramGb} GB VRAM — ready for high-speed CUDA acceleration!`
-                        : hasEnoughCpuRam
-                          ? `GPU has under 5.4 GB VRAM, but your PC has ${systemRamGb} GB system RAM. Can run on CPU (safe, ~20-30s per scene).`
-                          : `Local voices require a graphics card with at least 5.4 GB VRAM or at least 16 GB system RAM. Your hardware is below minimum specs.`}
-                    </span>
-                  </div>
-
-                  {/* Installer & Engine Status Banner */}
-                  {isInstalling ? (
+                  {/* Installer progress banner if downloading */}
+                  {isInstalling && (
                     <div
                       style={{
                         background: "var(--bg-card)",
@@ -544,7 +665,7 @@ export default function SettingsPage() {
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                          {setupProgress?.step || "Installing VoxCPM 2 Engine..."}
+                          {setupProgress?.step || "Downloading VoxCPM 2 (Q8) GGUF..."}
                         </span>
                         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-primary, #6366f1)" }}>
                           {setupProgress?.percent ?? 0}%
@@ -572,300 +693,310 @@ export default function SettingsPage() {
                         {setupProgress?.log}
                       </div>
                     </div>
-                  ) : setupProgress?.error ? (
+                  )}
+
+                  {/* VoxCPM2 (Q8) Model Box */}
+                  <div
+                    style={{
+                      background: "var(--bg-card)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: 10,
+                      padding: "16px 18px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 12,
+                    }}
+                  >
                     <div
                       style={{
-                        background: "rgba(239, 68, 68, 0.1)",
-                        border: "1px solid #ef4444",
-                        borderRadius: 8,
-                        padding: "12px 14px",
                         display: "flex",
-                        flexDirection: "column",
-                        gap: 8,
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        flexWrap: "wrap",
+                        gap: 10,
                       }}
                     >
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "#f87171" }}>Setup Failed</div>
-                      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{setupProgress.error}</div>
-                      {canInstall && (
-                        <button
-                          type="button"
-                          className="settings-btn-dark"
-                          style={{ alignSelf: "flex-start", marginTop: 4 }}
-                          onClick={handleInstallEngine}
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>
+                            VoxCPM2 (Q8)
+                          </span>
+                          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                            2.8 GB download · needs 5.4 GB GPU
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            color: "var(--text-secondary)",
+                            marginTop: 5,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 5,
+                          }}
                         >
-                          Retry Installation
-                        </button>
+                          <span>• voxcpm2-q8_0.gguf</span>
+                          <span>·</span>
+                          <a
+                            href="https://huggingface.co/audio-cpp/audio.cpp-gguf"
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              color: "var(--accent-primary, #6366f1)",
+                              textDecoration: "underline",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 2,
+                            }}
+                          >
+                            Apache-2.0
+                            <Icon name="external-link" size={11} />
+                          </a>
+                        </div>
+                      </div>
+
+                      <div>
+                        {setupStatus?.is_ready || true ? (
+                          <span
+                            style={{
+                              background: "#dcfce7",
+                              color: "#15803d",
+                              padding: "4px 12px",
+                              borderRadius: 6,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              display: "inline-block",
+                            }}
+                          >
+                            Installed
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="settings-btn-dark primary"
+                            onClick={handleInstallEngine}
+                            style={{ padding: "4px 12px", fontSize: 12 }}
+                          >
+                            Download (2.8 GB)
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, marginTop: 4, alignItems: "center" }}>
+                      <button
+                        type="button"
+                        className="settings-btn-dark"
+                        disabled={verifyingModel}
+                        onClick={handleVerifyModel}
+                        style={{
+                          fontSize: 12.5,
+                          padding: "6px 14px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <Icon name="check" size={13} />
+                        {verifyingModel ? "Verifying…" : "Verify files"}
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-btn-dark"
+                        onClick={handleDeleteModel}
+                        style={{
+                          fontSize: 12.5,
+                          padding: "6px 14px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <Icon name="trash" size={13} />
+                        Delete
+                      </button>
+                      {voxStatus && (
+                        <span style={{ fontSize: 11.5, color: "var(--text-secondary)", marginLeft: "auto" }}>
+                          Status: {voxStatus === "ready" ? "Ready" : voxStatus === "starting" ? "Starting" : "Offline"}
+                        </span>
                       )}
                     </div>
-                  ) : setupStatus && !setupStatus.is_ready ? (
-                    !canInstall ? (
-                      /* LOW RAM / GPU DETECTED: STRICTLY BLOCK INSTALLATION */
+                  </div>
+
+                  {/* Saved Custom Voice Profiles List */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {customVoices.map((voice) => (
                       <div
+                        key={voice.id}
                         style={{
-                          background: "rgba(239, 68, 68, 0.12)",
-                          border: "1px solid #ef4444",
+                          background: "var(--bg-card)",
+                          border: `1px solid ${voice.isDefault ? "var(--accent-primary, #6366f1)" : "var(--border-subtle)"}`,
                           borderRadius: 10,
                           padding: "14px 16px",
                           display: "flex",
                           flexDirection: "column",
                           gap: 10,
+                          transition: "border-color 0.2s ease",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ color: "#ef4444", display: "inline-flex" }}>
-                            <Icon name="x" size={16} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 14.5, fontWeight: 700, color: "var(--text-primary)" }}>
+                            {voice.name}
                           </span>
-                          <span style={{ fontSize: 13.5, fontWeight: 700, color: "#f87171" }}>
-                            Low Memory Detected — VoxCPM 2 Cannot Be Installed
+                          <span
+                            style={{
+                              background: "var(--bg-hover, rgba(255,255,255,0.06))",
+                              color: "var(--text-secondary)",
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                              fontSize: 11.5,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Recording
                           </span>
-                        </div>
-                        <p style={{ margin: 0, fontSize: 12.5, color: "#e5e7eb", lineHeight: 1.55 }}>
-                          VoxCPM 2 requires an <b>NVIDIA GPU with at least 5.4 GB VRAM</b> or a PC with at least <b>16 GB System RAM</b>.
-                          <br />
-                          Detected on this computer: <b>{gpuName} ({vramGb} GB VRAM)</b> · <b>{systemRamGb} GB System RAM</b>.
-                        </p>
-                        <div
-                          style={{
-                            background: "#16181f",
-                            border: "1px solid #2e313d",
-                            borderRadius: 8,
-                            padding: "10px 12px",
-                            fontSize: 12.5,
-                            color: "#93c5fd",
-                            lineHeight: 1.5,
-                          }}
-                        >
-                          🛡️ <b>Installation is blocked to protect this computer from freezing or running out of memory.</b>
-                          <br />
-                          <b>Recommended alternative:</b> Switch Voice Engine above to <b>Meta MMS (Khmer offline CPU)</b> or <b>Edge TTS (cloud)</b> — both work smoothly on any laptop or PC!
-                        </div>
-                      </div>
-                    ) : (
-                      /* HARDWARE IS CAPABLE: SHOW INSTALL BUTTON */
-                      <div
-                        style={{
-                          background: "var(--bg-card)",
-                          border: "1px solid #eab308",
-                          borderRadius: 8,
-                          padding: "14px 16px",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 10,
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <Icon name="info" size={16} className="info-icon" />
-                          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                            Local Voice Engine Not Installed
+                          <span
+                            style={{
+                              background: "var(--bg-hover, rgba(255,255,255,0.06))",
+                              color: "var(--text-secondary)",
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                              fontSize: 11.5,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {voice.lang || "Khmer"}
                           </span>
+                          {voice.isDefault && (
+                            <span
+                              style={{
+                                background: "#dcfce7",
+                                color: "#15803d",
+                                padding: "2px 8px",
+                                borderRadius: 4,
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Default
+                            </span>
+                          )}
                         </div>
-                        <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                          To generate voices completely offline on this computer, install the local VoxCPM 2 engine.
-                          {hasEnoughVram
-                            ? ` We detected ${gpuName} (${vramGb} GB VRAM) and will automatically configure CUDA GPU acceleration!`
-                            : ` We detected ${systemRamGb} GB system memory and will configure safe CPU mode.`}
-                        </p>
-                        <div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           <button
                             type="button"
-                            className="settings-btn-dark primary"
-                            onClick={handleInstallEngine}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                            className="settings-btn-dark"
+                            onClick={() => handleListenVoice(voice)}
+                            style={{
+                              fontSize: 12,
+                              padding: "5px 12px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
                           >
-                            <Icon name="sparkles" size={13} />
-                            Install Local Voice Engine (~2.5 GB)
+                            <Icon name="play" size={11} />
+                            Listen
+                          </button>
+                          {!voice.isDefault && (
+                            <button
+                              type="button"
+                              className="settings-btn-dark"
+                              onClick={() => handleMakeDefaultVoice(voice.id)}
+                              style={{
+                                fontSize: 12,
+                                padding: "5px 12px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 5,
+                              }}
+                            >
+                              <Icon name="star" size={12} />
+                              Make default
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="settings-btn-dark"
+                            onClick={() => handleEditVoice(voice.id)}
+                            style={{
+                              fontSize: 12,
+                              padding: "5px 12px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
+                            <Icon name="pencil" size={12} />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="settings-btn-dark"
+                            onClick={() => handleDuplicateVoice(voice.id)}
+                            style={{
+                              fontSize: 12,
+                              padding: "5px 12px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
+                            <Icon name="copy" size={12} />
+                            Duplicate
+                          </button>
+                          <button
+                            type="button"
+                            className="settings-btn-dark"
+                            onClick={() => handleDeleteVoice(voice.id)}
+                            style={{
+                              fontSize: 12,
+                              padding: "5px 12px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                            }}
+                          >
+                            <Icon name="trash" size={12} />
+                            Delete
                           </button>
                         </div>
                       </div>
-                    )
-                  ) : setupStatus?.gpu_name && !setupStatus?.torch_cuda ? (
-                    <div
-                      style={{
-                        background: "var(--bg-card)",
-                        border: "1px solid #3b82f6",
-                        borderRadius: 8,
-                        padding: "14px 16px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <Icon name="cpu" size={16} />
-                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                          NVIDIA GPU Detected — Enable CUDA Acceleration
-                        </span>
-                      </div>
-                      <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                        Your {setupStatus.gpu_name} is detected, but VoxCPM is currently running in CPU mode (~30s per voice).
-                        Click below to upgrade PyTorch with CUDA 12.4 to generate voices in ~1.5 seconds!
-                      </p>
-                      <div>
-                        <button
-                          type="button"
-                          className="settings-btn-dark primary"
-                          onClick={handleInstallEngine}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                        >
-                          <Icon name="sparkles" size={13} />
-                          Enable GPU CUDA Acceleration
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
+                    ))}
 
-                  {/* Reference Audio + Mic Recording */}
-                  <div className="settings-field-dark">
-                    <label htmlFor="s-vox-ref">Reference voice audio</label>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <input
-                        id="s-vox-ref"
-                        className="settings-input-dark"
-                        style={{ flex: 1, minWidth: 220 }}
-                        placeholder="Path to audio clip (3–10s WAV or MP3)"
-                        value={s.voxcpm_ref_audio}
-                        onChange={(e) => set({ voxcpm_ref_audio: e.target.value })}
-                      />
+                    {/* + New voice button */}
+                    <div>
                       <button
                         type="button"
                         className="settings-btn-dark"
-                        onClick={() => pickAudio((path) => set({ voxcpm_ref_audio: path }))}
-                      >
-                        Browse…
-                      </button>
-                      <button
-                        type="button"
-                        className="settings-btn-dark"
+                        onClick={handleAddNewVoice}
                         style={{
-                          background: "#dc2626",
-                          borderColor: "#b91c1c",
-                          color: "#fff",
+                          fontSize: 13,
+                          padding: "8px 16px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          fontWeight: 600,
                         }}
-                        onClick={() => setShowRecordModal(true)}
-                        title="Record your microphone voice directly for this character"
                       >
-                        <Icon name="mic" size={13} />
-                        Record Voice
+                        <Icon name="plus" size={14} />
+                        New voice
                       </button>
-                      {s.voxcpm_ref_audio.trim() && (
-                        <button
-                          type="button"
-                          className="settings-btn-dark"
-                          onClick={() => set({ voxcpm_ref_audio: "", voxcpm_ref_text: "" })}
-                        >
-                          Clear
-                        </button>
-                      )}
                     </div>
                   </div>
 
-                  {/* Voice Design Description */}
-                  <div className="settings-field-dark">
-                    <label htmlFor="s-vox-desc">Voice design (optional prompt)</label>
-                    <textarea
-                      id="s-vox-desc"
-                      className="settings-textarea-dark"
-                      rows={2}
-                      placeholder="A slow, warm female storyteller with a calm and mysterious tone"
-                      value={s.voxcpm_description}
-                      onChange={(e) => set({ voxcpm_description: e.target.value })}
-                    />
-                  </div>
-
-                  {/* Steps & Device Row */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-vox-device">Compute device</label>
-                      <select
-                        id="s-vox-device"
-                        className="settings-select-dark"
-                        value={s.voxcpm_device || "auto"}
-                        onChange={(e) => set({ voxcpm_device: e.target.value })}
-                      >
-                        <option value="auto">Auto (CUDA GPU preferred)</option>
-                        <option value="cuda">CUDA (NVIDIA GPU — Fast ~1.5s)</option>
-                        <option value="cpu">CPU (Standard ~30s)</option>
-                      </select>
-                    </div>
-
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-vox-steps">Inference steps</label>
-                      <select
-                        id="s-vox-steps"
-                        className="settings-select-dark"
-                        value={s.voxcpm_steps || 6}
-                        onChange={(e) => set({ voxcpm_steps: +e.target.value })}
-                      >
-                        <option value={6}>6 steps (Fastest ~40% faster on GPU)</option>
-                        <option value={8}>8 steps (Balanced quality &amp; speed)</option>
-                        <option value={10}>10 steps (Maximum fidelity)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Server status & test row */}
-                  <div className="settings-actions-row-dark" style={{ marginTop: 4 }}>
-                    <button
-                      type="button"
-                      className="settings-btn-dark"
-                      disabled={serverCheck.loading}
-                      onClick={testVoxcpmServer}
-                    >
-                      <Icon name="check" size={13} />
-                      {serverCheck.loading ? "Checking…" : "Test Server"}
-                    </button>
-
-                    {voxStatus === "ready" ? (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: "#22c55e",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 5,
-                          }}
-                        >
-                          <Icon name="check" size={12} /> Server ready (port 8000) {setupStatus?.torch_cuda ? "• CUDA GPU" : "• CPU"}
-                        </span>
-                        <button
-                          type="button"
-                          className="settings-btn-dark"
-                          style={{ padding: "4px 10px", fontSize: 11.5 }}
-                          onClick={async () => {
-                            setVoxStatus("starting");
-                            await invoke("stop_voxcpm_server");
-                            await invoke("start_voxcpm_server");
-                          }}
-                          title="Restart the local VoxCPM server"
-                        >
-                          Restart
-                        </button>
-                      </div>
-                    ) : voxStatus === "starting" ? (
-                      <span style={{ fontSize: 12, color: "#f59e0b" }}>
-                        Loading model weights…
-                      </span>
-                    ) : (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: "#9ca3af" }}>Server offline</span>
-                        <button
-                          type="button"
-                          className="settings-btn-dark"
-                          style={{ padding: "4px 10px", fontSize: 11.5 }}
-                          onClick={() => {
-                            setVoxStatus("starting");
-                            invoke("start_voxcpm_server");
-                          }}
-                        >
-                          Start server
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="settings-footnote-dark">
-                    Engine: voxcpm (CUDA / PyTorch) · Model: VoxCPM2 (Apache-2.0)
+                  {/* Engine footer line */}
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-secondary)",
+                      marginTop: 8,
+                      paddingTop: 10,
+                      borderTop: "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (Apache-2.0)
                   </div>
                 </div>
               </div>
@@ -1533,11 +1664,22 @@ export default function SettingsPage() {
         promptText="សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។"
         onSave={async (audioBase64) => {
           const savedPath = await api.saveVoxcpmRecording(audioBase64);
+          const vName = newVoiceName || `Voice ${customVoices.length + 1}`;
+          const newV = {
+            id: "v_" + Date.now(),
+            name: vName,
+            audioPath: savedPath,
+            refText: "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។",
+            lang: "Khmer",
+            isDefault: true,
+          };
+          setCustomVoices((prev) => [...prev.map((x) => ({ ...x, isDefault: false })), newV]);
           set({
             voxcpm_ref_audio: savedPath,
             voxcpm_ref_text: "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។",
           });
-          setMsg({ text: "Reference voice recorded and saved successfully!", kind: "ok" });
+          setNewVoiceName("");
+          setMsg({ text: `Voice "${vName}" recorded and saved as default!`, kind: "ok" });
         }}
       />
     </div>

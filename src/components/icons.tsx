@@ -5,7 +5,7 @@ export type IconName =
   | "sparkles" | "globe" | "chevron-right" | "chevron-left" | "play" | "pause"
   | "check" | "x" | "film" | "key" | "refresh" | "arrow-left" | "clock"
   | "pencil" | "volume" | "video" | "folder" | "mic" | "info" | "cpu"
-  | "sun" | "moon" | "monitor" | "book" | "external-link" | "wand";
+  | "sun" | "moon" | "monitor" | "book" | "external-link" | "wand" | "star" | "copy";
 
 const shapes: Record<IconName, ReactNode> = {
   book: (
@@ -170,6 +170,15 @@ const shapes: Record<IconName, ReactNode> = {
   ),
   folder: (
     <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+  ),
+  star: (
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
   ),
 };
 

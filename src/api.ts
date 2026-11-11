@@ -107,6 +107,8 @@ export const api = {
     }>("get_gpu_info"),
   getVoxcpmSetupStatus: () => invoke<VoxCpmSetupStatus>("get_voxcpm_setup_status"),
   setupVoxcpmEngine: () => invoke<string>("setup_voxcpm_engine"),
+  verifyVoxcpmModel: () => invoke<{ ok: boolean; filename: string; size_mb: number; message: string }>("verify_voxcpm_model"),
+  deleteVoxcpmModel: () => invoke<boolean>("delete_voxcpm_model"),
   openOutputDir: (path?: string | null) => invoke<void>("open_output_dir", { path: path ?? null }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (

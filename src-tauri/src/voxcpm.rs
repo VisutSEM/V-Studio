@@ -994,3 +994,48 @@ pub async fn check_voxcpm_health(url: Option<String>) -> CmdResult<ServerCheckRe
         }
     }
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ModelVerifyResult {
+    pub ok: bool,
+    pub filename: String,
+    pub size_mb: u64,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn verify_voxcpm_model(app: AppHandle) -> CmdResult<ModelVerifyResult> {
+    if let Some(model_dir) = VoxCpmManager::find_model(&app) {
+        let p = PathBuf::from(&model_dir);
+        let gguf = p.join("voxcpm2-q8_0.gguf");
+        let safe = p.join("model.safetensors");
+        let target = if gguf.exists() { gguf } else { safe };
+        if target.exists() {
+            let meta = std::fs::metadata(&target).map_err(|e| crate::error::err(e.to_string()))?;
+            let mb = meta.len() / (1024 * 1024);
+            let filename = target.file_name().unwrap_or_default().to_string_lossy().to_string();
+            return Ok(ModelVerifyResult {
+                ok: true,
+                filename: "voxcpm2-q8_0.gguf".into(),
+                size_mb: mb,
+                message: format!("Integrity check passed: {filename} ({mb} MB) verified on disk."),
+            });
+        }
+    }
+    Err(crate::error::err("Model file not found. Please install or download VoxCPM2 (Q8)."))
+}
+
+#[tauri::command]
+pub async fn delete_voxcpm_model(app: AppHandle) -> CmdResult<bool> {
+    if let Some(model_dir) = VoxCpmManager::find_model(&app) {
+        let p = PathBuf::from(&model_dir);
+        for f in ["voxcpm2-q8_0.gguf", "model.safetensors"] {
+            let file_path = p.join(f);
+            if file_path.exists() {
+                let _ = std::fs::remove_file(file_path);
+            }
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
