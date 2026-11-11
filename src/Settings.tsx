@@ -1589,9 +1589,50 @@ export default function SettingsPage() {
                 <div className="settings-info-box-dark">
                   <Icon name="info" size={16} className="info-icon" />
                   <span>
-                    Videos are exported in 1080p Full HD (1920x1080) at 30 fps using bundled FFmpeg
-                    with synchronized SRT/burn-in subtitles.
+                    Videos are exported in 1080p Full HD (1920x1080) at 30 fps using bundled FFmpeg.
+                    Subtitles can be burned into video or saved as standalone SRT.
                   </span>
+                </div>
+
+                <div className="settings-field-dark">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <label htmlFor="s-subtitles-enabled" style={{ margin: 0, fontWeight: 600 }}>Burn-in Subtitles in Video</label>
+                      <div className="settings-footnote-dark" style={{ marginTop: 2 }}>
+                        Burn synchronized subtitles permanently into video frames. Turn OFF for clean video without text.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      id="s-subtitles-enabled"
+                      onClick={() => set({ subtitles_enabled: !(s.subtitles_enabled ?? true) })}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: 6,
+                        border: "1px solid",
+                        borderColor: (s.subtitles_enabled ?? true) ? "#6366f1" : "var(--border-subtle, #334155)",
+                        background: (s.subtitles_enabled ?? true) ? "rgba(99, 102, 241, 0.15)" : "transparent",
+                        color: (s.subtitles_enabled ?? true) ? "var(--accent-primary, #6366f1)" : "var(--text-secondary, #94a3b8)",
+                        cursor: "pointer",
+                        fontWeight: 700,
+                        fontSize: 13,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: (s.subtitles_enabled ?? true) ? "#22c55e" : "#94a3b8",
+                          display: "inline-block",
+                        }}
+                      />
+                      {(s.subtitles_enabled ?? true) ? "ON" : "OFF"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="settings-field-dark">
@@ -1609,6 +1650,17 @@ export default function SettingsPage() {
                     <option value="noto">Noto Sans Khmer &amp; Inter (Bundled)</option>
                     <option value="system">System Default</option>
                   </select>
+                </div>
+
+                <div className="settings-actions-row-dark" style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="settings-btn-dark primary"
+                    disabled={busy}
+                    onClick={save}
+                  >
+                    {busy ? "Saving…" : "Save settings"}
+                  </button>
                 </div>
               </div>
             </div>
@@ -1643,7 +1695,7 @@ export default function SettingsPage() {
 
               <div className="settings-card-right">
                 <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                  Version 0.2.1
+                  Version 0.2.2
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 4 }}>

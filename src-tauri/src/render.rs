@@ -237,11 +237,18 @@ pub async fn render_video(
     state: State<'_, AppState>,
     id: String,
     ambient: Option<String>,
+    subtitles: Option<bool>,
 ) -> CmdResult<Option<String>> {
-    Ok(render(&app, &state, &id, ambient).await?)
+    Ok(render(&app, &state, &id, ambient, subtitles).await?)
 }
 
-async fn render(app: &AppHandle, st: &AppState, id: &str, ambient: Option<String>) -> Result<Option<String>> {
+async fn render(
+    app: &AppHandle,
+    st: &AppState,
+    id: &str,
+    ambient: Option<String>,
+    subtitles: Option<bool>,
+) -> Result<Option<String>> {
     let scenes = db::scenes(&st.pool, id).await?;
     if scenes.is_empty() || scenes.iter().all(|s| s.audio_path.is_none()) {
         bail!("Generate voices for the scenes before rendering");
@@ -274,25 +281,42 @@ async fn render(app: &AppHandle, st: &AppState, id: &str, ambient: Option<String
         bail!("{failed} clips failed to render, run Render again");
     }
 
-    // 2. Concat all scene clips into 1 combined video + burn subtitles (+ optional looping ambient sound)
+    // 2. Concat all scene clips into 1 combined video + burn subtitles (if enabled) (+ optional looping ambient sound)
     let list: String = scenes
         .iter()
         .map(|s| format!("file 'clips/scene_{:03}.mp4'\n", s.idx))
         .collect();
     tokio::fs::write(dir.join("clips.txt"), list).await?;
 
+    let s = crate::settings::load(app);
+    let burn_subs = subtitles.unwrap_or(s.subtitles_enabled);
+
     let ass = "ass=subs.ass:fontsdir=fonts";
     let mut a = args!["-y", "-f", "concat", "-safe", "0", "-i", "clips.txt"];
     match ambient.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => {
             a.extend(args!["-stream_loop", "-1", "-i", p]);
-            a.extend(args![
-                "-filter_complex",
-                format!("[0:v]{ass}[v];[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:normalize=0[a]"),
-                "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"
-            ]);
+            if burn_subs {
+                a.extend(args![
+                    "-filter_complex",
+                    format!("[0:v]{ass}[v];[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:normalize=0[a]"),
+                    "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"
+                ]);
+            } else {
+                a.extend(args![
+                    "-filter_complex",
+                    "[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:normalize=0[a]",
+                    "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"
+                ]);
+            }
         }
-        None => a.extend(args!["-vf", ass, "-c:a", "copy"]),
+        None => {
+            if burn_subs {
+                a.extend(args!["-vf", ass, "-c:a", "copy"]);
+            } else {
+                a.extend(args!["-c:a", "copy"]);
+            }
+        }
     }
     a.extend(args![
         "-c:v",
@@ -316,7 +340,6 @@ async fn render(app: &AppHandle, st: &AppState, id: &str, ambient: Option<String
     db::set_stage(&st.pool, id, "Rendered", false).await?;
 
     // Auto-export combined video to configured output_dir
-    let s = crate::settings::load(app);
     let out_dir = if !s.output_dir.trim().is_empty() {
         PathBuf::from(s.output_dir.trim())
     } else {

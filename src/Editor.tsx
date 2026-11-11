@@ -24,6 +24,7 @@ export default function Editor({
   const [busy, setBusy] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewMode, setPreviewMode] = useState<"cue" | "video">("cue");
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(true);
   const [exportedPath, setExportedPath] = useState<string | null>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const stopTimeRef = useRef<number | null>(null);
@@ -38,6 +39,11 @@ export default function Editor({
 
   useEffect(() => {
     load().catch((e) => setMsg({ text: String(e), kind: "error" }));
+    api.getSettings().then((s) => {
+      if (typeof s.subtitles_enabled === "boolean") {
+        setSubtitlesEnabled(s.subtitles_enabled);
+      }
+    }).catch(() => {});
     const un = onProgress((p) => {
       if (p.project_id === id) setProg(p);
     });
@@ -144,12 +150,12 @@ export default function Editor({
     setProg(null);
     try {
       await api.saveSubs(id, norm());
-      const out = await api.render(id, ambient);
+      const out = await api.render(id, ambient, subtitlesEnabled);
       if (out) setExportedPath(out);
       setMsg({
         text: out
-          ? `Render complete! All scenes combined into 1 video & exported to: ${out}`
-          : "Render complete! All scenes combined into 1 video.",
+          ? `Render complete! All scenes combined into 1 video (${subtitlesEnabled ? "with subtitles" : "without subtitles"}) & exported to: ${out}`
+          : `Render complete! All scenes combined into 1 video (${subtitlesEnabled ? "with subtitles" : "without subtitles"}).`,
         kind: "ok",
       });
       const updated = await api.get(id);
@@ -263,7 +269,36 @@ export default function Editor({
             {sceneLabel(d.scenes.length)} · {langLabel(d.project.language)}
           </p>
         </div>
-        <div className="head-actions">
+        <div className="head-actions" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {/* Subtitles ON/OFF Toggle */}
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => setSubtitlesEnabled((prev) => !prev)}
+            title={subtitlesEnabled ? "Subtitles: ON (will be burned into video). Click to turn OFF." : "Subtitles: OFF (clean video without text). Click to turn ON."}
+            style={{
+              borderColor: subtitlesEnabled ? "var(--accent-primary, #6366f1)" : "var(--border-subtle, #334155)",
+              background: subtitlesEnabled ? "rgba(99, 102, 241, 0.12)" : "rgba(255, 255, 255, 0.04)",
+              color: subtitlesEnabled ? "var(--accent-primary, #6366f1)" : "var(--text-secondary, #94a3b8)",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: subtitlesEnabled ? "#22c55e" : "#94a3b8",
+                display: "inline-block",
+              }}
+            />
+            Subtitles: {subtitlesEnabled ? "ON" : "OFF"}
+          </button>
+
           <button className="btn" disabled={busy} onClick={saveOnly}>
             Save subtitles
           </button>
@@ -379,7 +414,7 @@ export default function Editor({
                   <Icon name="image" size={30} />
                 </div>
               )}
-              {cue?.text && (
+              {cue?.text && subtitlesEnabled && (
                 <div className="preview-caption khmer">{cue.text}</div>
               )}
               {cue && cur?.s.audio_path && (
@@ -408,6 +443,39 @@ export default function Editor({
                 <b className="truncate" title={ambient ?? undefined}>
                   {ambient ? ambient.split(/[\\/]/).pop() : "None"}
                 </b>
+              </div>
+              <div className="summary-row">
+                <span>Subtitles in video</span>
+                <button
+                  type="button"
+                  onClick={() => setSubtitlesEnabled(!subtitlesEnabled)}
+                  style={{
+                    border: "1px solid",
+                    borderColor: subtitlesEnabled ? "rgba(34, 197, 94, 0.4)" : "rgba(148, 163, 184, 0.3)",
+                    background: subtitlesEnabled ? "rgba(34, 197, 94, 0.12)" : "rgba(148, 163, 184, 0.1)",
+                    color: subtitlesEnabled ? "#22c55e" : "#94a3b8",
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                  title="Toggle burn-in subtitles for final video"
+                >
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: subtitlesEnabled ? "#22c55e" : "#94a3b8",
+                      display: "inline-block",
+                    }}
+                  />
+                  {subtitlesEnabled ? "ON (Burn-in)" : "OFF (Clean)"}
+                </button>
               </div>
               <div className="summary-row" style={{ borderBottom: 0 }}>
                 <span>Final video</span>
@@ -464,7 +532,26 @@ export default function Editor({
         <section className="cue-panel">
           <div className="cue-head">
             <div>
-              <h2>Subtitles</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <h2>Subtitles</h2>
+                <button
+                  type="button"
+                  onClick={() => setSubtitlesEnabled(!subtitlesEnabled)}
+                  style={{
+                    border: "none",
+                    background: subtitlesEnabled ? "rgba(99, 102, 241, 0.12)" : "rgba(148, 163, 184, 0.12)",
+                    color: subtitlesEnabled ? "var(--accent-primary, #6366f1)" : "var(--muted)",
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                  title="Click to toggle burn-in subtitles on/off for video"
+                >
+                  Burn-in: {subtitlesEnabled ? "ON" : "OFF"}
+                </button>
+              </div>
               <p className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>
                 Click a row to hear that line. Space to play/pause, ↑/↓ to navigate.
               </p>

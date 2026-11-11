@@ -67,6 +67,8 @@ pub struct Settings {
     pub voxcpm_cfg: f32,
     pub voxcpm_steps: u32,
     pub voxcpm_device: String,
+    // Subtitles in video
+    pub subtitles_enabled: bool,
     // Video Output / Export directory
     pub output_dir: String,
     // Appearance: "system" | "light" | "dark"
@@ -101,6 +103,7 @@ impl Default for Settings {
             voxcpm_cfg: 2.0,
             voxcpm_steps: 6,
             voxcpm_device: "auto".into(),
+            subtitles_enabled: true,
             output_dir: crate::render::default_output_dir().to_string_lossy().to_string(),
             theme: "system".into(),
         }

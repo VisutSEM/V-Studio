@@ -30,6 +30,7 @@ export interface Settings {
   voxcpm_url: string; voxcpm_model: string; voxcpm_description: string;
   voxcpm_ref_audio: string; voxcpm_ref_text: string;
   voxcpm_cfg: number; voxcpm_steps: number; voxcpm_device: string;
+  subtitles_enabled: boolean;
   output_dir: string;
   theme: "system" | "light" | "dark";
 }
@@ -91,7 +92,8 @@ export const api = {
     invoke<void>("delete_scene", { sceneId }),
   generateSceneVoice: (sceneId: number) => invoke<void>("generate_scene_voice", { sceneId }),
   generateSceneImage: (sceneId: number) => invoke<void>("generate_scene_image", { sceneId }),
-  render: (id: string, ambient: string | null) => invoke<string | null>("render_video", { id, ambient }),
+  render: (id: string, ambient: string | null, subtitles?: boolean | null) =>
+    invoke<string | null>("render_video", { id, ambient, subtitles: subtitles ?? null }),
   exportVideo: (id: string, dest?: string | null) => invoke<string>("export_video", { id, dest: dest ?? null }),
   saveSceneRecording: (sceneId: number, audioBase64: string) =>
     invoke<number>("save_scene_recording", { sceneId, audioBase64 }),
