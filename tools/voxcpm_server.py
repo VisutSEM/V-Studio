@@ -298,25 +298,51 @@ def resolve_ref_audio(ref: str) -> tuple[str, bool]:
     return path, False
 
 
-def prepare_ref_clip(path: str, max_seconds: float = 4.5) -> tuple[str, bool]:
-    """Ensure the reference clip is clamped to max_seconds to prevent CPU memory exhaustion and speed up attention."""
+def prepare_ref_clip(path: str, max_seconds: float = 6.0) -> tuple[str, bool]:
+    """Preprocess reference audio to native VoxCPM 2 input specification:
+    - 16 kHz sample rate (VoxCPM 2 speech tokenizer input)
+    - Mono (single channel)
+    - Peak-normalized to prevent distortion/clipping
+    - Clamped duration (up to 6.0s) for optimal context attention
+    """
+    import numpy as np
     import soundfile as sf
 
     try:
-        info = sf.info(path)
-        if info.duration > max_seconds:
-            log(
-                f"Trimming reference audio from {info.duration:.1f}s down to {max_seconds:.1f}s for faster laptop processing"
-            )
-            max_frames = int(info.samplerate * max_seconds)
-            data, sr = sf.read(path, frames=max_frames, dtype="float32")
-            fd, trimmed_path = tempfile.mkstemp(prefix="voxcpm_trimmed_", suffix=".wav")
-            os.close(fd)
-            sf.write(trimmed_path, data, sr, format="WAV", subtype="PCM_16")
-            return trimmed_path, True
+        data, sr = sf.read(path, dtype="float32")
+        # 1. Downmix stereo to mono
+        if data.ndim > 1:
+            data = np.mean(data, axis=1)
+
+        # 2. Resample cleanly to 16 kHz if necessary
+        target_sr = 16000
+        if sr != target_sr:
+            log(f"Resampling reference audio from {sr} Hz to {target_sr} Hz (native 16 kHz input)")
+            num_target_samples = int(round(len(data) * float(target_sr) / float(sr)))
+            data = np.interp(
+                np.linspace(0, len(data), num_target_samples, endpoint=False),
+                np.arange(len(data)),
+                data,
+            ).astype(np.float32)
+            sr = target_sr
+
+        # 3. Clamp duration (up to max_seconds)
+        max_samples = int(sr * max_seconds)
+        if len(data) > max_samples:
+            data = data[:max_samples]
+
+        # 4. Peak normalize to ~0.90 to eliminate digital clipping and low-volume artifacts
+        peak = float(np.max(np.abs(data)))
+        if peak > 1e-4:
+            data = (data / peak) * 0.90
+
+        fd, processed_path = tempfile.mkstemp(prefix="voxcpm_16k_clean_", suffix=".wav")
+        os.close(fd)
+        sf.write(processed_path, data, target_sr, format="WAV", subtype="PCM_16")
+        return processed_path, True
     except Exception as exc:  # noqa: BLE001
-        log(f"Warning: could not inspect/trim reference audio {path}: {exc}")
-    return path, False
+        log(f"Warning: could not preprocess reference audio {path}: {exc}")
+        return path, False
 
 
 def synthesize(payload: dict) -> bytes:
@@ -399,6 +425,12 @@ def synthesize(payload: dict) -> bytes:
             torch.cuda.empty_cache()
 
     buf = io.BytesIO()
+    # 48 kHz studio output: peak-normalize to avoid DAC clipping
+    import numpy as np
+    if isinstance(wav, np.ndarray) and len(wav) > 0:
+        max_peak = float(np.max(np.abs(wav)))
+        if max_peak > 0.98:
+            wav = (wav / max_peak) * 0.95
     sf.write(buf, wav, _sample_rate, format="WAV", subtype="PCM_16")
     return buf.getvalue()
 

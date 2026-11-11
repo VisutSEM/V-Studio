@@ -1007,11 +1007,11 @@ pub async fn verify_voxcpm_model(app: AppHandle) -> CmdResult<ModelVerifyResult>
                 ok: true,
                 filename: "voxcpm2-q8_0.gguf".into(),
                 size_mb: mb,
-                message: format!("Integrity check passed: {filename} ({mb} MB) verified on disk."),
+                message: format!("Integrity check passed: {filename} ({mb} MB) verified on disk — VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)."),
             });
         }
     }
-    Err(crate::error::err("Model file not found. Please install or download VoxCPM2 (Q8)."))
+    Err(crate::error::err("Model file not found. Please install or download VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)."))
 }
 
 #[tauri::command]

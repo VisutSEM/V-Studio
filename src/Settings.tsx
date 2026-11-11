@@ -555,7 +555,7 @@ export default function SettingsPage() {
                       value={s.tts_kind}
                       onChange={(e) => set({ tts_kind: e.target.value as TtsKind })}
                     >
-                      <option value="voxcpm">VoxCPM2 (local, your GPU)</option>
+                      <option value="voxcpm">VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)</option>
                       <option value="edge_tts">Edge TTS (Free Cloud)</option>
                       <option value="meta_mms">Meta MMS (Fast Offline Khmer)</option>
                       <option value="azure">Azure Speech</option>
@@ -736,7 +736,7 @@ export default function SettingsPage() {
                       <div>
                         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>
-                            VoxCPM2 (Q8)
+                            VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)
                           </span>
                           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                             2.8 GB download · needs 5.4 GB GPU
@@ -749,10 +749,47 @@ export default function SettingsPage() {
                             marginTop: 5,
                             display: "flex",
                             alignItems: "center",
-                            gap: 5,
+                            gap: 6,
+                            flexWrap: "wrap",
                           }}
                         >
                           <span>• voxcpm2-q8_0.gguf</span>
+                          <span
+                            style={{
+                              background: "rgba(99, 102, 241, 0.12)",
+                              color: "var(--accent-primary, #6366f1)",
+                              padding: "2px 7px",
+                              borderRadius: 4,
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            48 kHz Output
+                          </span>
+                          <span
+                            style={{
+                              background: "rgba(34, 197, 94, 0.12)",
+                              color: "#22c55e",
+                              padding: "2px 7px",
+                              borderRadius: 4,
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            2B Parameters
+                          </span>
+                          <span
+                            style={{
+                              background: "rgba(245, 158, 11, 0.12)",
+                              color: "#f59e0b",
+                              padding: "2px 7px",
+                              borderRadius: 4,
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            16 kHz Input
+                          </span>
                           <span>·</span>
                           <a
                             href="https://huggingface.co/audio-cpp/audio.cpp-gguf"
@@ -1015,7 +1052,7 @@ export default function SettingsPage() {
                       borderTop: "1px solid var(--border-subtle)",
                     }}
                   >
-                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (Apache-2.0)
+                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)
                   </div>
                 </div>
               </div>

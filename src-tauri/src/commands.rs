@@ -398,7 +398,7 @@ pub async fn save_voxcpm_recording(
             "-i",
             temp_in.to_string_lossy().as_ref(),
             "-ar",
-            "48000",
+            "16000",
             "-ac",
             "1",
             out_path.to_string_lossy().as_ref(),
