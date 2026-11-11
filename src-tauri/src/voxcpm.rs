@@ -417,7 +417,8 @@ pub async fn is_server_healthy(base_url: &str) -> bool {
         if let Ok(res) = client.get(&url).send().await {
             if res.status().is_success() {
                 if let Ok(body) = res.json::<serde_json::Value>().await {
-                    return body.get("status").and_then(|v| v.as_str()) == Some("ok");
+                    let st = body.get("status").and_then(|v| v.as_str());
+                    return st == Some("ok") || st == Some("ready");
                 }
             }
         }

@@ -668,7 +668,11 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
         }
     }
 
-    let res = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
+
+    let mut res = client
         .post(format!("{base}/v1/audio/speech"))
         .json(&body)
         .send()
@@ -692,9 +696,33 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
             };
             anyhow!("Could not reach VoxCPM: {problem} Details: {e:#}")
         })?;
-    let status = res.status();
+
+    let mut status = res.status();
+    // If server responded with 503 (model still loading weights), retry briefly
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        for _ in 0..2 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if let Ok(retry_res) = client
+                .post(format!("{base}/v1/audio/speech"))
+                .json(&body)
+                .send()
+                .await
+            {
+                if retry_res.status().is_success() {
+                    res = retry_res;
+                    status = res.status();
+                    break;
+                }
+            }
+        }
+    }
+
     if !status.is_success() {
-        return Err(provider_error(status, &res.text().await?));
+        let err_text = res.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || err_text.contains("model is still loading") {
+            bail!("VoxCPM model is still loading weights into memory. Please wait a moment and try again, or switch to 'Meta MMS (Fast Offline)' in Settings for instant Khmer voice.");
+        }
+        return Err(provider_error(status, &err_text));
     }
     Ok(res.bytes().await?.to_vec())
 }

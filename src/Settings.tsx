@@ -212,7 +212,12 @@ export default function SettingsPage() {
       }
       setTestMsg({ which, text: `${label} OK — ${describe(result)}`, ok: true });
     } catch (e) {
-      setTestMsg({ which, text: `${label} failed: ${String(e)}`, ok: false });
+      const errStr = String(e);
+      const friendlyErr =
+        errStr.includes("still loading") || errStr.includes("503")
+          ? "VoxCPM 2 is still warming up in memory. Please wait a moment and try again, or switch to 'Meta MMS (Fast Offline)' above for instant Khmer voice."
+          : errStr;
+      setTestMsg({ which, text: `${label} failed: ${friendlyErr}`, ok: false });
     }
     setTesting(null);
   };
@@ -429,20 +434,29 @@ export default function SettingsPage() {
                       value={s.tts_kind}
                       onChange={(e) => set({ tts_kind: e.target.value as TtsKind })}
                     >
-                      <option value="voxcpm">VoxCPM2 (local, your GPU)</option>
-                      <option value="meta_mms">Meta MMS (local offline, fast CPU)</option>
-                      <option value="kiri_tts">Kiri TTS (Khmer AI, cloud)</option>
-                      <option value="azure">Azure Speech (Khmer &amp; English, cloud)</option>
-                      <option value="gpt_sovits">GPT-SoVITS (local voice clone)</option>
-                      <option value="edge_tts">Edge TTS (free cloud)</option>
+                      <option value="meta_mms">Meta MMS (Local Offline, Instant Khmer — Recommended for 8GB RAM)</option>
+                      <option value="voxcpm">VoxCPM2 (Local AI Voice Cloning — Needs 16GB RAM / 8GB GPU)</option>
+                      <option value="azure">Azure Speech (Khmer &amp; English, Cloud API)</option>
+                      <option value="kiri_tts">Kiri TTS (Khmer AI, Cloud API)</option>
+                      <option value="edge_tts">Edge TTS (Free Cloud)</option>
+                      <option value="gpt_sovits">GPT-SoVITS (Local Voice Clone)</option>
                     </select>
                   </div>
 
                   <div className="settings-info-box-dark">
                     <Icon name="info" size={16} className="info-icon" />
                     <span>
-                      Local voices run on your graphics card: free and offline. Install the model
-                      and make or choose a voice in “Local voices” below.
+                      {s.tts_kind === "meta_mms"
+                        ? "Meta MMS runs 100% offline on your CPU with zero wait (<1s per sentence). Lightweight and optimized for laptops with 8 GB RAM."
+                        : s.tts_kind === "voxcpm"
+                          ? (systemRamMb < 15000 && !hasEnoughVram
+                              ? `Notice: Your PC has ${systemRamGb} GB RAM. VoxCPM 2 is a heavy 5 GB model. If VoxCPM takes time to warm up, V-Studio automatically generates Khmer narration via Meta MMS so preview and generation never fail. You can also select Meta MMS above for instant offline narration.`
+                              : "VoxCPM 2 generates high-fidelity cloned voices offline on your graphics card.")
+                          : s.tts_kind === "kiri_tts"
+                            ? "Kiri TTS (kiritts.com) provides natural Khmer voices in the cloud with low latency."
+                            : s.tts_kind === "azure"
+                              ? "Azure Speech provides high-quality neural narration in Khmer (Sreymom / Piseth) and English."
+                              : "Local and cloud voices for your narration."}
                     </span>
                   </div>
 

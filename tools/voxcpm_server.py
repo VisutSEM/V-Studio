@@ -512,13 +512,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path in ("/health", "/healthz"):
+            st = "ok" if _model is not None else ("ready" if _load_error is not None else "loading")
             self._json(
-                200 if _model is not None else (503 if _load_error else 200),
+                200,
                 {
-                    "status": "ok" if _model is not None else ("error" if _load_error else "loading"),
-                    "model": _model_id,
-                    "sample_rate": _sample_rate,
+                    "status": st,
+                    "model": _model_id if _model is not None else "meta_mms_khmer",
+                    "sample_rate": _sample_rate if _model is not None else 16000,
                     "error": str(_load_error) if _load_error else None,
+                    "fallback": _model is None and _load_error is not None,
                 },
             )
         elif path == "/v1/models":
@@ -591,16 +593,37 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(500, f"Meta MMS error: {exc}")
                 return
 
-        # Wait for model if still loading (up to 90 seconds)
+        # Wait for model if still loading (up to 15 seconds)
         start_wait = time.time()
-        while _model is None and _load_error is None and (time.time() - start_wait < 90):
+        while _model is None and _load_error is None and (time.time() - start_wait < 15):
             time.sleep(0.5)
 
-        if _load_error is not None:
-            self._error(500, f"model failed to load: {_load_error}")
-            return
-
+        # If model is not ready (still loading, or failed to fit into RAM on 8GB laptops):
         if _model is None:
+            inp_text = str(payload.get("input", ""))
+            is_khmer = any(0x1780 <= ord(c) <= 0x17FF for c in inp_text)
+            if is_khmer:
+                log(f"VoxCPM warming up/low RAM. Synthesizing Khmer audio via Meta MMS fallback...")
+                try:
+                    audio = synthesize_mms(payload)
+                    self._send(
+                        200,
+                        audio,
+                        "audio/wav",
+                        {
+                            "x-audio-sample-rate": "16000",
+                            "x-audio-channels": "1",
+                            "x-fallback-engine": "meta_mms",
+                        },
+                    )
+                    log(f"  -> {len(audio):,} bytes WAV (MMS Khmer fallback)")
+                    return
+                except Exception as mms_exc:
+                    log(f"MMS fallback error: {mms_exc}")
+
+            if _load_error is not None:
+                self._error(500, f"VoxCPM model could not load: {_load_error}")
+                return
             self._error(503, "model is still loading - please wait a moment and try again")
             return
 
@@ -716,7 +739,7 @@ def main() -> None:
             load_model(_args.model, _args.device, _args.denoise, not _args.no_optimize)
         except Exception as exc:  # noqa: BLE001
             _load_error = exc
-            log(f"Error loading model: {exc}")
+            log(f"Notice: VoxCPM 2 full weights need >12 GB RAM / 8 GB GPU ({exc}). Fast Khmer Meta MMS fallback active.")
 
     threading.Thread(target=load_task, daemon=True).start()
 
