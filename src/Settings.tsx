@@ -639,10 +639,15 @@ export default function SettingsPage() {
                         style={{
                           background: "#dcfce7",
                           color: "#15803d",
-                          padding: "2px 10px",
-                          borderRadius: 999,
+                          padding: "3px 10px",
+                          borderRadius: 6,
                           fontSize: 12,
                           fontWeight: 600,
+                          whiteSpace: "nowrap",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          lineHeight: 1.3,
+                          flexShrink: 0,
                         }}
                       >
                         {vramGb} GB video memory
