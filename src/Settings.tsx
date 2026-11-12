@@ -2,9 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, Settings as S, SettingsView, VoxCpmSetupStatus, VoxCpmSetupProgress, onVoxcpmSetupProgress } from "./api";
+import { api, Settings as S, SettingsView } from "./api";
 import { Icon } from "./components/icons";
-import { VoiceRecorderModal } from "./components/VoiceRecorderModal";
 import { applyTheme } from "./theme";
 
 type Kind = S["llm_kind"];
@@ -68,71 +67,9 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState<TestKey | null>(null);
   const [testMsg, setTestMsg] = useState<TestMsg>(null);
-  const [voxStatus, setVoxStatus] = useState<string>("checking");
   const [testVoiceText] = useState("ការសាកសំឡេង");
-  const [gpuInfo, setGpuInfo] = useState<{
-    has_nvidia: boolean;
-    gpu_name: string;
-    vram_mb: number;
-    torch_cuda_available: boolean;
-    torch_version: string;
-  } | null>(null);
-  const [showRecordModal, setShowRecordModal] = useState(false);
-  const [setupStatus, setSetupStatus] = useState<VoxCpmSetupStatus | null>(null);
-  const [setupProgress, setSetupProgress] = useState<VoxCpmSetupProgress | null>(null);
-  const [isInstalling, setIsInstalling] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"latest" | "available" | null>("latest");
-  const [verifyingModel, setVerifyingModel] = useState(false);
-  const [newVoiceName, setNewVoiceName] = useState("");
-  const [customVoices, setCustomVoices] = useState<
-    Array<{
-      id: string;
-      name: string;
-      audioPath: string;
-      refText?: string;
-      lang: string;
-      isDefault?: boolean;
-    }>
-  >(() => {
-    try {
-      const stored = localStorage.getItem("vstudio_custom_voices");
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((v: any) => ({
-            ...v,
-            audioPath: v.audioPath || "tools/voices/khmer_mrr_piseth_16k.wav",
-            refText: v.refText || "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
-          }));
-        }
-      }
-    } catch (_) {}
-    return [
-      {
-        id: "v1",
-        name: "Mrr Set",
-        audioPath: "tools/voices/khmer_mrr_piseth_16k.wav",
-        refText: "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
-        lang: "Khmer",
-        isDefault: false,
-      },
-      {
-        id: "v2",
-        name: "Mrr rong",
-        audioPath: "tools/voices/khmer_mrr_piseth_16k.wav",
-        refText: "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
-        lang: "Khmer",
-        isDefault: true,
-      },
-    ];
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("vstudio_custom_voices", JSON.stringify(customVoices));
-    } catch (_) {}
-  }, [customVoices]);
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
@@ -142,59 +79,10 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    let active = true;
-    api.getVoxcpmSetupStatus().then((st) => {
-      if (active) setSetupStatus(st);
-    }).catch(() => {});
-
-    const unlisten = onVoxcpmSetupProgress((p) => {
-      if (!active) return;
-      setSetupProgress(p);
-      if (p.is_done) {
-        setIsInstalling(false);
-        api.getVoxcpmSetupStatus().then(setSetupStatus).catch(() => {});
-        setVoxStatus("ready");
-      }
-      if (p.error) {
-        setIsInstalling(false);
-      }
-    });
-
-    return () => {
-      active = false;
-      unlisten.then((fn) => fn()).catch(() => {});
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const check = () => {
-      invoke<string>("get_voxcpm_status")
-        .then((st) => {
-          if (active) setVoxStatus(st);
-        })
-        .catch(() => {
-          if (active) setVoxStatus("stopped");
-        });
-    };
-    check();
-    const interval = setInterval(check, 3000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, []);
-
-  useEffect(() => {
     api
       .getSettings()
       .then(setS)
       .catch((e) => setMsg({ text: String(e), kind: "error" }));
-
-    api
-      .getGpuInfo()
-      .then(setGpuInfo)
-      .catch(() => {});
   }, []);
 
   if (!s) return null;
@@ -258,12 +146,7 @@ export default function SettingsPage() {
       }
       setTestMsg({ which, text: `${label} OK — ${describe(result)}`, ok: true });
     } catch (e) {
-      const errStr = String(e);
-      const friendlyErr =
-        errStr.includes("still loading") || errStr.includes("503")
-          ? "VoxCPM 2 is still warming up in memory. Please wait a moment and try again, or switch to 'Meta MMS (Fast Offline)' above for instant Khmer voice."
-          : errStr;
-      setTestMsg({ which, text: `${label} failed: ${friendlyErr}`, ok: false });
+      setTestMsg({ which, text: `${label} failed: ${String(e)}`, ok: false });
     }
     setTesting(null);
   };
@@ -278,186 +161,9 @@ export default function SettingsPage() {
       "test_tts",
       lang === "km" ? "Preview Khmer" : "Preview English",
       s.tts_kind === "azure" ? keys.azure : s.tts_kind === "kiri_tts" ? keys.kiri : "",
-      () =>
-        s.tts_kind === "voxcpm" && !hasEnoughVram
-          ? `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Studio Voice: GPU has ${vramGb} GB VRAM, needs 5.4 GB for local)`
-          : `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Studio Voice)`,
+      () => `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Voice)`,
       { text },
     );
-  };
-
-  const testVoxcpmServer = async () => {
-    if (!s) return;
-    try {
-      const res = await invoke<{ ok: boolean; status: string; message: string }>(
-        "check_voxcpm_health",
-        { url: s.voxcpm_url || "http://127.0.0.1:8000" },
-      );
-      if (res.ok) setVoxStatus("ready");
-      else if (res.status === "loading") setVoxStatus("starting");
-      else setVoxStatus("stopped");
-    } catch (_) {
-      setVoxStatus("stopped");
-    }
-  };
-
-  const pickAudio = async (apply: (path: string) => void) => {
-    try {
-      const file = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "aac"] }],
-      });
-      if (typeof file === "string" && file) apply(file);
-    } catch (e) {
-      setMsg({ text: String(e), kind: "error" });
-    }
-  };
-
-  const gpuName = setupStatus?.gpu_name || gpuInfo?.gpu_name || "NVIDIA GeForce GPU";
-  const vramMb = setupStatus?.vram_mb ?? gpuInfo?.vram_mb ?? 0;
-  const vramGb = vramMb > 0 ? (vramMb / 1024).toFixed(1) : "0.0";
-  const systemRamMb = setupStatus?.system_ram_mb ?? 0;
-  const hasEnoughVram = vramMb >= 5400;
-  const hasEnoughCpuRam = systemRamMb >= 15000;
-  const canInstall = setupStatus ? setupStatus.can_install : (hasEnoughVram || hasEnoughCpuRam);
-
-  const handleInstallEngine = async () => {
-    if (!canInstall) return;
-    setIsInstalling(true);
-    setSetupProgress({
-      step: "Starting setup...",
-      percent: 5,
-      log: "Initializing setup...",
-      is_done: false,
-    });
-    try {
-      await api.setupVoxcpmEngine();
-      const updated = await api.getVoxcpmSetupStatus();
-      setSetupStatus(updated);
-      setVoxStatus("ready");
-    } catch (e) {
-      setSetupProgress({
-        step: "Installation failed",
-        percent: 0,
-        log: String(e),
-        is_done: false,
-        error: String(e),
-      });
-    } finally {
-      setIsInstalling(false);
-    }
-  };
-
-  const handleVerifyModel = async () => {
-    setVerifyingModel(true);
-    try {
-      testVoxcpmServer();
-      const res = await api.verifyVoxcpmModel();
-      setMsg({ text: res.message, kind: "ok" });
-    } catch (e) {
-      setMsg({ text: `Model verification: ${String(e)}`, kind: "error" });
-    } finally {
-      setVerifyingModel(false);
-    }
-  };
-
-  const handleDeleteModel = async () => {
-    if (!confirm("Are you sure you want to delete the local model files to free disk space?")) return;
-    try {
-      await api.deleteVoxcpmModel();
-      setMsg({ text: "VoxCPM model files deleted successfully.", kind: "ok" });
-      const updated = await api.getVoxcpmSetupStatus();
-      setSetupStatus(updated);
-    } catch (e) {
-      setMsg({ text: `Could not delete model: ${String(e)}`, kind: "error" });
-    }
-  };
-
-  const handleMakeDefaultVoice = (id: string) => {
-    setCustomVoices((prev) =>
-      prev.map((v) => ({ ...v, isDefault: v.id === id }))
-    );
-    const selected = customVoices.find((v) => v.id === id);
-    if (selected) {
-      const isMale = !/female|sreymom|woman|girl|lady/i.test(selected.name);
-      const desc = isMale
-        ? "Clear, articulate, natural Khmer male studio voice, high definition narration"
-        : "Clear, articulate, natural Khmer female studio voice, high definition narration";
-      set({
-        voxcpm_description: desc,
-        voxcpm_ref_audio: selected.audioPath || "",
-        voxcpm_ref_text: selected.refText || "",
-      });
-    }
-    setMsg({ text: `Default voice set to "${selected?.name || ""}"`, kind: "ok" });
-  };
-
-  const handleListenVoice = (voice: { id: string; name: string; audioPath: string; refText?: string; lang: string }) => {
-    set({
-      voxcpm_ref_audio: voice.audioPath || "tools/voices/khmer_mrr_piseth_16k.wav",
-      voxcpm_ref_text: voice.refText || "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
-    });
-    playPreview(voice.lang === "English" ? "en" : "km");
-  };
-
-  const handleEditVoice = (id: string) => {
-    const v = customVoices.find((x) => x.id === id);
-    if (!v) return;
-    const name = prompt("Edit voice name:", v.name);
-    if (name && name.trim()) {
-      setCustomVoices((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, name: name.trim() } : x))
-      );
-    }
-  };
-
-  const handleDuplicateVoice = (id: string) => {
-    const v = customVoices.find((x) => x.id === id);
-    if (!v) return;
-    const copy = {
-      ...v,
-      id: "v_" + Date.now(),
-      name: `${v.name} (Copy)`,
-      isDefault: false,
-    };
-    setCustomVoices((prev) => [...prev, copy]);
-    setMsg({ text: `Duplicated voice "${v.name}"`, kind: "ok" });
-  };
-
-  const handleDeleteVoice = (id: string) => {
-    const v = customVoices.find((x) => x.id === id);
-    if (!v) return;
-    if (customVoices.length <= 1) {
-      setMsg({ text: "At least one voice profile must remain.", kind: "error" });
-      return;
-    }
-    setCustomVoices((prev) => prev.filter((x) => x.id !== id));
-    setMsg({ text: `Deleted voice "${v.name}"`, kind: "ok" });
-  };
-
-  const handleAddNewVoice = async () => {
-    const name = prompt("Enter a name for the new voice profile:", `Voice ${customVoices.length + 1}`);
-    if (!name || !name.trim()) return;
-    const vName = name.trim();
-    const useMic = confirm("Would you like to record with your Microphone? (Click OK for Mic, Cancel to choose an audio file)");
-    if (useMic) {
-      setNewVoiceName(vName);
-      setShowRecordModal(true);
-    } else {
-      pickAudio((path) => {
-        const newV = {
-          id: "v_" + Date.now(),
-          name: vName,
-          audioPath: path,
-          lang: "Khmer",
-          isDefault: true,
-        };
-        setCustomVoices((prev) => [...prev.map((x) => ({ ...x, isDefault: false })), newV]);
-        set({ voxcpm_ref_audio: path });
-        setMsg({ text: `Voice "${vName}" added successfully from file!`, kind: "ok" });
-      });
-    }
   };
 
   return (
@@ -583,11 +289,10 @@ export default function SettingsPage() {
                       value={s.tts_kind}
                       onChange={(e) => set({ tts_kind: e.target.value as TtsKind })}
                     >
-                      <option value="voxcpm">VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)</option>
-                      <option value="edge_tts">Edge TTS (Free Cloud)</option>
-                      <option value="meta_mms">Meta MMS (Fast Offline Khmer)</option>
-                      <option value="azure">Azure Speech</option>
+                      <option value="edge_tts">Edge TTS (Free Cloud — Crystal-Clear Khmer &amp; English)</option>
                       <option value="kiri_tts">Kiri TTS (Khmer AI Cloud)</option>
+                      <option value="azure">Azure Speech</option>
+                      <option value="meta_mms">Meta MMS (Fast Offline Khmer)</option>
                       <option value="gpt_sovits">GPT-SoVITS (Local Voice Clone)</option>
                     </select>
                   </div>
@@ -595,10 +300,10 @@ export default function SettingsPage() {
                   <div className="settings-info-box-dark">
                     <Icon name="info" size={16} className="info-icon" />
                     <span>
-                      {s.tts_kind === "meta_mms"
-                        ? "Meta MMS runs 100% offline on your CPU with zero wait (<1s per sentence). Lightweight and optimized for laptops with 8 GB RAM."
-                        : s.tts_kind === "voxcpm"
-                          ? "Local voices run on your graphics card: free and offline. Install the model and make or choose a voice in \"Local voices\" below."
+                      {s.tts_kind === "edge_tts"
+                        ? "Edge TTS is free, unofficial cloud neural speech: provides crystal-clear Khmer (Piseth / Sreymom) and English narration without API keys."
+                        : s.tts_kind === "meta_mms"
+                          ? "Meta MMS runs 100% offline on your CPU with zero wait (<1s per sentence). Lightweight and optimized for laptops with 8 GB RAM."
                           : s.tts_kind === "kiri_tts"
                             ? "Kiri TTS (kiritts.com) provides natural Khmer voices in the cloud with low latency."
                             : s.tts_kind === "azure"
@@ -638,452 +343,23 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* Card 2: Local voices (VoxCPM 2) */}
-              <div className="settings-card-dark">
-                <div className="settings-card-left">
-                  <h3>Local voices</h3>
-                  <p>
-                    VoxCPM2 makes natural narration on your own graphics card — free, no limits,
-                    works offline. Make a voice from a description or from your own recording; it
-                    stays the same in every scene and project.
-                  </p>
-                </div>
-
-                <div className="settings-card-right" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  {/* GPU Badge */}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-                    <div
-                      className="gpu-badge-dark"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "8px 14px",
-                        borderRadius: 8,
-                        background: "var(--bg-card)",
-                        border: "1px solid var(--border-subtle)",
-                      }}
-                    >
-                      <Icon name="cpu" size={16} />
-                      <span style={{ fontWeight: 600 }}>{gpuName}</span>
-                      <span
-                        style={{
-                          background: hasEnoughVram ? "#dcfce7" : "rgba(255, 255, 255, 0.08)",
-                          color: hasEnoughVram ? "#15803d" : "var(--text-secondary)",
-                          padding: "3px 10px",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          whiteSpace: "nowrap",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          lineHeight: 1.3,
-                          flexShrink: 0,
-                        }}
-                      >
-                        {vramGb} GB video memory
-                      </span>
-                    </div>
+              {/* Edge TTS Details */}
+              {s.tts_kind === "edge_tts" && (
+                <div className="settings-card-dark">
+                  <div className="settings-card-left">
+                    <h3>Edge Neural Voices</h3>
+                    <p>Free, high-fidelity neural speech from Microsoft. No configuration needed.</p>
                   </div>
-
-                  {!hasEnoughVram ? (
+                  <div className="settings-card-right">
                     <div className="settings-info-box-dark">
                       <Icon name="info" size={16} className="info-icon" />
                       <span>
-                        Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead.
+                        Available voices: <strong>km-KH-PisethNeural</strong> (Khmer Male), <strong>km-KH-SreymomNeural</strong> (Khmer Female), and <strong>en-US-AriaNeural</strong> (English). You can pick your voice per project or in the new video wizard.
                       </span>
                     </div>
-                  ) : (
-                    <>
-                  {/* Installer progress banner if downloading */}
-                  {isInstalling && (
-                    <div
-                      style={{
-                        background: "var(--bg-card)",
-                        border: "1px solid var(--accent-primary, #6366f1)",
-                        borderRadius: 8,
-                        padding: "14px 16px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                          {setupProgress?.step || "Downloading VoxCPM 2 (Q8) GGUF..."}
-                        </span>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-primary, #6366f1)" }}>
-                          {setupProgress?.percent ?? 0}%
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          width: "100%",
-                          height: 6,
-                          background: "var(--border-subtle)",
-                          borderRadius: 999,
-                          overflow: "hidden",
-                        }}
-                      >
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${setupProgress?.percent ?? 5}%`,
-                            background: "var(--accent-primary, #6366f1)",
-                            transition: "width 0.3s ease",
-                          }}
-                        />
-                      </div>
-                      <div style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
-                        {setupProgress?.log}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* VoxCPM2 (Q8) Model Box */}
-                  <div
-                    style={{
-                      background: "var(--bg-card)",
-                      border: "1px solid var(--border-subtle)",
-                      borderRadius: 10,
-                      padding: "16px 18px",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 12,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
-                        flexWrap: "wrap",
-                        gap: 10,
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>
-                            VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)
-                          </span>
-                          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                            2.8 GB download · needs 5.4 GB GPU
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 12.5,
-                            color: "var(--text-secondary)",
-                            marginTop: 5,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <span>• voxcpm2-q8_0.gguf</span>
-                          <span
-                            style={{
-                              background: "rgba(99, 102, 241, 0.12)",
-                              color: "var(--accent-primary, #6366f1)",
-                              padding: "2px 7px",
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: 600,
-                            }}
-                          >
-                            48 kHz Output
-                          </span>
-                          <span
-                            style={{
-                              background: "rgba(34, 197, 94, 0.12)",
-                              color: "#22c55e",
-                              padding: "2px 7px",
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: 600,
-                            }}
-                          >
-                            2B Parameters
-                          </span>
-                          <span
-                            style={{
-                              background: "rgba(245, 158, 11, 0.12)",
-                              color: "#f59e0b",
-                              padding: "2px 7px",
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: 600,
-                            }}
-                          >
-                            16 kHz Input
-                          </span>
-                          <span>·</span>
-                          <a
-                            href="https://huggingface.co/audio-cpp/audio.cpp-gguf"
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{
-                              color: "var(--accent-primary, #6366f1)",
-                              textDecoration: "underline",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 2,
-                            }}
-                          >
-                            Apache-2.0
-                            <Icon name="external-link" size={11} />
-                          </a>
-                        </div>
-                      </div>
-
-                      <div>
-                        {setupStatus?.is_ready ? (
-                          <span
-                            style={{
-                              background: "#dcfce7",
-                              color: "#15803d",
-                              padding: "4px 12px",
-                              borderRadius: 6,
-                              fontSize: 12,
-                              fontWeight: 600,
-                              display: "inline-block",
-                            }}
-                          >
-                            Installed
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="settings-btn-dark primary"
-                            onClick={handleInstallEngine}
-                            style={{ padding: "4px 12px", fontSize: 12 }}
-                          >
-                            Download (2.8 GB)
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, marginTop: 4, alignItems: "center" }}>
-                      <button
-                        type="button"
-                        className="settings-btn-dark"
-                        disabled={verifyingModel}
-                        onClick={handleVerifyModel}
-                        style={{
-                          fontSize: 12.5,
-                          padding: "6px 14px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        <Icon name="check" size={13} />
-                        {verifyingModel ? "Verifying…" : "Verify files"}
-                      </button>
-                      <button
-                        type="button"
-                        className="settings-btn-dark"
-                        onClick={handleDeleteModel}
-                        style={{
-                          fontSize: 12.5,
-                          padding: "6px 14px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        <Icon name="trash" size={13} />
-                        Delete
-                      </button>
-                      {voxStatus && (
-                        <span style={{ fontSize: 11.5, color: "var(--text-secondary)", marginLeft: "auto" }}>
-                          Status: {voxStatus === "ready" ? "Ready" : voxStatus === "starting" ? "Starting" : "Offline"}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Saved Custom Voice Profiles List */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {customVoices.map((voice) => (
-                      <div
-                        key={voice.id}
-                        style={{
-                          background: "var(--bg-card)",
-                          border: `1px solid ${voice.isDefault ? "var(--accent-primary, #6366f1)" : "var(--border-subtle)"}`,
-                          borderRadius: 10,
-                          padding: "14px 16px",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 10,
-                          transition: "border-color 0.2s ease",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 14.5, fontWeight: 700, color: "var(--text-primary)" }}>
-                            {voice.name}
-                          </span>
-                          <span
-                            style={{
-                              background: "var(--bg-hover, rgba(255,255,255,0.06))",
-                              color: "var(--text-secondary)",
-                              padding: "2px 8px",
-                              borderRadius: 4,
-                              fontSize: 11.5,
-                              fontWeight: 500,
-                            }}
-                          >
-                            Recording
-                          </span>
-                          <span
-                            style={{
-                              background: "var(--bg-hover, rgba(255,255,255,0.06))",
-                              color: "var(--text-secondary)",
-                              padding: "2px 8px",
-                              borderRadius: 4,
-                              fontSize: 11.5,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {voice.lang || "Khmer"}
-                          </span>
-                          {voice.isDefault && (
-                            <span
-                              style={{
-                                background: "#dcfce7",
-                                color: "#15803d",
-                                padding: "2px 8px",
-                                borderRadius: 4,
-                                fontSize: 11.5,
-                                fontWeight: 600,
-                              }}
-                            >
-                              Default
-                            </span>
-                          )}
-                        </div>
-
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <button
-                            type="button"
-                            className="settings-btn-dark"
-                            onClick={() => handleListenVoice(voice)}
-                            style={{
-                              fontSize: 12,
-                              padding: "5px 12px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 5,
-                            }}
-                          >
-                            <Icon name="play" size={11} />
-                            Listen
-                          </button>
-                          {!voice.isDefault && (
-                            <button
-                              type="button"
-                              className="settings-btn-dark"
-                              onClick={() => handleMakeDefaultVoice(voice.id)}
-                              style={{
-                                fontSize: 12,
-                                padding: "5px 12px",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 5,
-                              }}
-                            >
-                              <Icon name="star" size={12} />
-                              Make default
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="settings-btn-dark"
-                            onClick={() => handleEditVoice(voice.id)}
-                            style={{
-                              fontSize: 12,
-                              padding: "5px 12px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 5,
-                            }}
-                          >
-                            <Icon name="pencil" size={12} />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="settings-btn-dark"
-                            onClick={() => handleDuplicateVoice(voice.id)}
-                            style={{
-                              fontSize: 12,
-                              padding: "5px 12px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 5,
-                            }}
-                          >
-                            <Icon name="copy" size={12} />
-                            Duplicate
-                          </button>
-                          <button
-                            type="button"
-                            className="settings-btn-dark"
-                            onClick={() => handleDeleteVoice(voice.id)}
-                            style={{
-                              fontSize: 12,
-                              padding: "5px 12px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 5,
-                            }}
-                          >
-                            <Icon name="trash" size={12} />
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* + New voice button */}
-                    <div>
-                      <button
-                        type="button"
-                        className="settings-btn-dark"
-                        onClick={handleAddNewVoice}
-                        style={{
-                          fontSize: 13,
-                          padding: "8px 16px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontWeight: 600,
-                        }}
-                      >
-                        <Icon name="plus" size={14} />
-                        New voice
-                      </button>
-                    </div>
-                  </div>
-                    </>
-                  )}
-
-                  {/* Engine footer line */}
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--text-secondary)",
-                      marginTop: 8,
-                      paddingTop: 10,
-                      borderTop: "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (48 kHz, 2B parameters, 16 kHz input)
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* Conditional Engine Details if Azure or Kiri selected */}
               {s.tts_kind === "kiri_tts" && (
@@ -1790,34 +1066,6 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
-
-      {/* Voice Recorder Modal for recording character reference audio */}
-      <VoiceRecorderModal
-        isOpen={showRecordModal}
-        onClose={() => setShowRecordModal(false)}
-        title="Record Reference Voice for VoxCPM"
-        subtitle="Speak 3 to 10 seconds of clear speech into your microphone for VoxCPM to clone"
-        promptText="សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។"
-        onSave={async (audioBase64) => {
-          const savedPath = await api.saveVoxcpmRecording(audioBase64);
-          const vName = newVoiceName || `Voice ${customVoices.length + 1}`;
-          const newV = {
-            id: "v_" + Date.now(),
-            name: vName,
-            audioPath: savedPath,
-            refText: "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។",
-            lang: "Khmer",
-            isDefault: true,
-          };
-          setCustomVoices((prev) => [...prev.map((x) => ({ ...x, isDefault: false })), newV]);
-          set({
-            voxcpm_ref_audio: savedPath,
-            voxcpm_ref_text: "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។",
-          });
-          setNewVoiceName("");
-          setMsg({ text: `Voice "${vName}" recorded and saved as default!`, kind: "ok" });
-        }}
-      />
     </div>
   );
 }

@@ -48,7 +48,7 @@ export default function Wizard({
   const [est, setEst] = useState({ scene_len: 6, scenes: 30 });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [ttsKind, setTtsKind] = useState<"azure" | "gpt_sovits" | "voxcpm" | "edge_tts" | "meta_mms" | "kiri_tts">("edge_tts");
+  const [ttsKind, setTtsKind] = useState<"azure" | "gpt_sovits" | "edge_tts" | "meta_mms" | "kiri_tts">("edge_tts");
 
   useEffect(() => {
     api.estimate(mins * 60).then(setEst);
@@ -61,18 +61,16 @@ export default function Wizard({
       .catch(() => {});
   }, []);
 
-  const localVoice = ttsKind === "voxcpm" || ttsKind === "gpt_sovits" || ttsKind === "meta_mms" || ttsKind === "kiri_tts";
+  const localVoice = ttsKind === "gpt_sovits" || ttsKind === "meta_mms" || ttsKind === "kiri_tts";
   const voices = VOICES.filter((v) => v[1] === language);
   const engineName =
     ttsKind === "kiri_tts"
       ? "Kiri TTS"
-      : ttsKind === "voxcpm"
-        ? "VoxCPM 2"
-        : ttsKind === "meta_mms"
-          ? "Meta MMS (Khmer)"
-          : "GPT-SoVITS";
+      : ttsKind === "meta_mms"
+        ? "Meta MMS (Khmer)"
+        : "GPT-SoVITS";
   const voiceLabel = localVoice
-    ? `${engineName} (${ttsKind === "kiri_tts" ? "native Khmer voice" : ttsKind === "voxcpm" ? "designed voice" : ttsKind === "meta_mms" ? "offline model" : "reference voice"})`
+    ? `${engineName} (${ttsKind === "kiri_tts" ? "native Khmer voice" : ttsKind === "meta_mms" ? "offline model" : "reference voice"})`
     : VOICES.find((v) => v[0] === voice)?.[2] ?? voice;
   const voiceShort = localVoice
     ? engineName
@@ -215,11 +213,9 @@ export default function Wizard({
                   <span>
                     {ttsKind === "kiri_tts"
                       ? "Kiri TTS generates natural native Khmer voice via your Kiri API key (Maly, Neary, Oudom, etc.)."
-                      : ttsKind === "voxcpm"
-                        ? "VoxCPM 2 designs or clones the voice saved in Settings → Voice. It speaks Khmer."
-                        : ttsKind === "meta_mms"
-                          ? "Meta MMS generates Khmer voice locally on CPU without internet."
-                          : "GPT-SoVITS clones the reference voice saved in Settings → Voice."}
+                      : ttsKind === "meta_mms"
+                        ? "Meta MMS generates Khmer voice locally on CPU without internet."
+                        : "GPT-SoVITS clones the reference voice saved in Settings → Voice."}
                   </span>
                 </div>
                 {language === "km" && ttsKind === "gpt_sovits" && (

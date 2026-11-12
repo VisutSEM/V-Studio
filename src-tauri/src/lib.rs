@@ -7,7 +7,6 @@ mod planner;
 mod render;
 mod settings;
 mod subs;
-pub mod voxcpm;
 
 use tauri::Manager;
 
@@ -22,14 +21,6 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(db::init(&dir))?;
             app.manage(db::AppState { pool, dir });
 
-            // Initialize VoxCPM manager and auto-start server in the background
-            let vox = voxcpm::VoxCpmManager::new();
-            app.manage(vox.clone());
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                vox.start_background(app_handle).await;
-            });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,14 +29,6 @@ pub fn run() {
             settings::test_llm,
             settings::test_image,
             settings::test_tts,
-            voxcpm::get_voxcpm_status,
-            voxcpm::get_voxcpm_setup_status,
-            voxcpm::setup_voxcpm_engine,
-            voxcpm::start_voxcpm_server,
-            voxcpm::stop_voxcpm_server,
-            voxcpm::check_voxcpm_health,
-            voxcpm::verify_voxcpm_model,
-            voxcpm::delete_voxcpm_model,
             commands::create_project,
             commands::update_project,
             commands::list_projects,
@@ -63,8 +46,6 @@ pub fn run() {
             commands::add_scene,
             commands::delete_scene,
             commands::save_scene_recording,
-            commands::save_voxcpm_recording,
-            commands::get_gpu_info,
             pipeline::generate_script,
             pipeline::generate_voice,
             pipeline::generate_images,
@@ -79,11 +60,5 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            if let Some(vox) = app_handle.try_state::<voxcpm::VoxCpmManager>() {
-                vox.stop();
-            }
-        }
-    });
+    app.run(|_app_handle, _event| {});
 }

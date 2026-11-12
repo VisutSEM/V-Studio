@@ -296,17 +296,62 @@ pub async fn tts(
                 .ok_or_else(|| anyhow!("Missing Kiri TTS API key. Save it in Settings."))?;
             kiri_tts(s, key, voice, text, slow).await
         }
-        TtsKind::EdgeTts => edge_tts(s, voice, text, slow).await,
-        TtsKind::MetaMms => meta_mms(s, text, slow).await,
+        TtsKind::EdgeTts => edge_tts(voice, text, slow).await,
+        TtsKind::MetaMms => meta_mms(text, slow).await,
         TtsKind::GptSovits => gpt_sovits(s, text, lang, slow).await,
-        TtsKind::VoxCpm => voxcpm(s, text).await,
     }
 }
 
+fn find_workspace_root() -> Option<PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        for dir in cwd.ancestors() {
+            if dir.join("tools").join("tts_cli.py").exists() {
+                return Some(dir.to_path_buf());
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for dir in exe.ancestors() {
+            if dir.join("tools").join("tts_cli.py").exists() {
+                return Some(dir.to_path_buf());
+            }
+        }
+    }
+    let fallback = PathBuf::from(r"D:\videogen");
+    if fallback.join("tools").join("tts_cli.py").exists() {
+        return Some(fallback);
+    }
+    None
+}
+
+fn find_python(root: &Path) -> PathBuf {
+    for venv_name in [".venv", ".venv-voxcpm", "venv"] {
+        let venv_py = root.join(venv_name).join("Scripts").join("python.exe");
+        if venv_py.exists() {
+            return venv_py;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            for venv_name in [".venv", ".venv-voxcpm", "venv", "python"] {
+                let p = parent.join(venv_name).join("Scripts").join("python.exe");
+                if p.exists() {
+                    return p;
+                }
+                let p2 = parent.join(venv_name).join("python.exe");
+                if p2.exists() {
+                    return p2;
+                }
+            }
+        }
+    }
+    PathBuf::from("python")
+}
+
 async fn run_tts_cli(engine: &str, voice: &str, text: &str, slow: bool) -> Result<Vec<u8>> {
-    let root = crate::voxcpm::VoxCpmManager::find_workspace_root()
-        .ok_or_else(|| anyhow!("Could not locate VideoGen workspace"))?;
-    let python = crate::voxcpm::VoxCpmManager::find_python(&root);
+    let root = find_workspace_root()
+        .ok_or_else(|| anyhow!("Could not locate VideoGen workspace or tools/tts_cli.py"))?;
+    let python = find_python(&root);
     let cli_script = root.join("tools").join("tts_cli.py");
     if !cli_script.exists() {
         bail!("tools/tts_cli.py not found at {}", cli_script.display());
@@ -346,72 +391,26 @@ async fn run_tts_cli(engine: &str, voice: &str, text: &str, slow: bool) -> Resul
 
 /// Microsoft Edge TTS (free Azure neural speech).
 pub async fn edge_tts(
-    s: &Settings,
     voice: &str,
     text: &str,
     slow: bool,
 ) -> Result<Vec<u8>> {
+    let clean_text = normalize_khmer_text(text);
     let voice_name = if voice.trim().is_empty() {
         "km-KH-SreymomNeural"
     } else {
         voice.trim()
     };
-    let base = voxcpm_base(&s.voxcpm_url);
-    if !base.is_empty() {
-        let body = json!({
-            "engine": "edge_tts",
-            "voice": voice_name,
-            "input": text,
-            "slow": slow,
-        });
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()?;
-        if let Ok(res) = client
-            .post(format!("{base}/v1/audio/speech"))
-            .json(&body)
-            .send()
-            .await
-        {
-            if res.status().is_success() {
-                return Ok(res.bytes().await?.to_vec());
-            }
-        }
-    }
-    // Fallback to local python runner
-    run_tts_cli("edge_tts", voice_name, text, slow).await
+    run_tts_cli("edge_tts", voice_name, &clean_text, slow).await
 }
 
 /// Meta MMS (Massively Multilingual Speech - fast local CPU).
 pub async fn meta_mms(
-    s: &Settings,
     text: &str,
     slow: bool,
 ) -> Result<Vec<u8>> {
-    let base = voxcpm_base(&s.voxcpm_url);
-    if !base.is_empty() {
-        let body = json!({
-            "engine": "meta_mms",
-            "model": "facebook/mms-tts-khm",
-            "input": text,
-            "slow": slow,
-        });
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-        if let Ok(res) = client
-            .post(format!("{base}/v1/audio/speech"))
-            .json(&body)
-            .send()
-            .await
-        {
-            if res.status().is_success() {
-                return Ok(res.bytes().await?.to_vec());
-            }
-        }
-    }
-    // Fallback to local python runner
-    run_tts_cli("meta_mms", "", text, slow).await
+    let clean_text = normalize_khmer_text(text);
+    run_tts_cli("meta_mms", "", &clean_text, slow).await
 }
 
 /// Kiri TTS (Blizzer - Khmer/English neural TTS API via OpenAI-compatible endpoint).
@@ -570,39 +569,6 @@ pub async fn gpt_sovits(s: &Settings, text: &str, lang: &str, slow: bool) -> Res
     Ok(res.bytes().await?.to_vec())
 }
 
-/// Normalize the VoxCPM URL: add `http://` if missing and accept the full
-/// `/v1/audio/speech` or `/v1` endpoint by trimming it back to the server root.
-fn voxcpm_base(url: &str) -> String {
-    let mut base = url.trim().trim_end_matches('/').to_string();
-    for suffix in ["/v1/audio/speech", "/audio/speech", "/v1"] {
-        if let Some(root) = base.strip_suffix(suffix) {
-            base = root.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    if !base.is_empty() && !base.starts_with("http://") && !base.starts_with("https://") {
-        base = format!("http://{base}");
-    }
-    base
-}
-
-/// MIME type for a reference clip, used when inlining it as a data URL.
-fn audio_mime(path: &str) -> &'static str {
-    match path
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "ogg" | "opus" => "audio/ogg",
-        "m4a" | "mp4" | "aac" => "audio/mp4",
-        _ => "audio/wav",
-    }
-}
-
 /// Normalize and clean Khmer text for articulate speech synthesis:
 /// Strips zero-width non-joiners/spaces that disrupt tokenizers, collapses spaces,
 /// and adds natural breathing pauses at clause boundaries.
@@ -629,196 +595,6 @@ pub fn normalize_khmer_text(text: &str) -> String {
         }
     }
     cleaned.trim().to_string()
-}
-
-/// VoxCPM 2 through its OpenAI-compatible `POST /v1/audio/speech` endpoint.
-/// Works with the bundled `tools/voxcpm_server.py` (Windows) and vLLM-Omni.
-///
-/// A voice-design description is sent as the `(instruction)text` prefix that
-/// VoxCPM 2 uses; reference audio is inlined as a base64 data URL so the server
-/// does not need access to this machine's files.
-pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
-    let clean_text = normalize_khmer_text(text);
-    let is_khmer = clean_text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
-
-    // Determine character persona:
-    let desc_lower = s.voxcpm_description.to_lowercase();
-    let is_female = desc_lower.contains("female")
-        || desc_lower.contains("sreymom")
-        || desc_lower.contains("woman")
-        || desc_lower.contains("girl")
-        || desc_lower.contains("lady");
-    let is_male = !is_female;
-
-    let default_khmer_voice = if is_male {
-        "km-KH-PisethNeural"
-    } else {
-        "km-KH-SreymomNeural"
-    };
-
-    // If GPU does not have >= 5.4 GB VRAM (e.g. RTX 3050 Laptop GPU with 3.9 GB),
-    // local GPU inference is unsupported. Synthesize with crystal-clear studio neural speech (Edge TTS):
-    let (has_nvidia, _, vram_mb) = crate::voxcpm::detect_nvidia_gpu();
-    if !has_nvidia || vram_mb < 5400 {
-        if is_khmer {
-            if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
-                return Ok(edge_bytes);
-            }
-            if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
-                return Ok(mms_bytes);
-            }
-        } else {
-            let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
-            if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
-                return Ok(edge_bytes);
-            }
-        }
-    }
-
-    let base = voxcpm_base(&s.voxcpm_url);
-    if base.is_empty() {
-        bail!("VoxCPM server URL is missing (Settings → Voice)");
-    }
-
-    let description = s.voxcpm_description.trim();
-    // Do not inject synthetic English prompts when reference audio is provided,
-    // as it disrupts Khmer phonetic alignment. Use clean Khmer text.
-    let input = if description.is_empty() {
-        clean_text.clone()
-    } else {
-        format!("({description}){clean_text}")
-    };
-    let model = if s.voxcpm_model.trim().is_empty() {
-        "openbmb/VoxCPM2"
-    } else {
-        s.voxcpm_model.trim()
-    };
-
-    let cfg_val = if s.voxcpm_cfg < 1.0 { 2.0 } else { s.voxcpm_cfg };
-    let steps_val = if s.voxcpm_steps < 6 { 10 } else { s.voxcpm_steps };
-
-    let mut body = json!({
-        "model": model,
-        "input": input,
-        "voice": "default", // required by the API, ignored by VoxCPM
-        "response_format": "wav",
-        // A fixed seed keeps a designed voice consistent across scenes and
-        // makes regenerating a scene reproducible.
-        "seed": 42,
-        "extra_params": {
-            "cfg_value": cfg_val,
-            "inference_timesteps": steps_val,
-        },
-    });
-
-    // Resolve reference audio: user-specified path, or fallback to bundled crystal-clear voice
-    let mut resolved_ref: Option<PathBuf> = None;
-    let custom_ref = s.voxcpm_ref_audio.trim();
-    if !custom_ref.is_empty() && Path::new(custom_ref).exists() {
-        resolved_ref = Some(PathBuf::from(custom_ref));
-    } else if let Some(root) = crate::voxcpm::VoxCpmManager::find_workspace_root() {
-        let bundled = root.join("tools").join("voices").join("khmer_mrr_piseth_16k.wav");
-        if bundled.exists() {
-            resolved_ref = Some(bundled);
-        }
-    }
-
-    if let Some(ref_path) = resolved_ref {
-        if let Ok(bytes) = tokio::fs::read(&ref_path).await {
-            let mime = audio_mime(&ref_path.to_string_lossy());
-            body["ref_audio"] = json!(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
-            let ref_text = s.voxcpm_ref_text.trim();
-            if !ref_text.is_empty() {
-                body["ref_text"] = json!(ref_text);
-            } else {
-                body["ref_text"] = json!("កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន");
-            }
-        }
-    }
-
-    // If using the local background server and it is still warming up, wait up to 30s
-    if (base == "http://127.0.0.1:8000" || base == "http://localhost:8000")
-        && !crate::voxcpm::is_server_healthy(&base).await
-    {
-        for _ in 0..30 {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-            if crate::voxcpm::is_server_healthy(&base).await {
-                break;
-            }
-        }
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
-
-    let res = client
-        .post(format!("{base}/v1/audio/speech"))
-        .json(&body)
-        .send()
-        .await;
-
-    let mut res = match res {
-        Ok(r) => r,
-        Err(_) => {
-            if is_khmer {
-                if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
-                    return Ok(edge_bytes);
-                }
-                if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
-                    return Ok(mms_bytes);
-                }
-            } else {
-                let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
-                if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
-                    return Ok(edge_bytes);
-                }
-            }
-            bail!("Could not reach VoxCPM server on {base} and fallback synthesis failed.");
-        }
-    };
-
-    let mut status = res.status();
-    // If server responded with 503 (model still loading weights), retry briefly
-    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-        for _ in 0..2 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if let Ok(retry_res) = client
-                .post(format!("{base}/v1/audio/speech"))
-                .json(&body)
-                .send()
-                .await
-            {
-                if retry_res.status().is_success() {
-                    res = retry_res;
-                    status = res.status();
-                    break;
-                }
-            }
-        }
-    }
-
-    if !status.is_success() {
-        let err_text = res.text().await.unwrap_or_default();
-        if is_khmer {
-            if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
-                return Ok(edge_bytes);
-            }
-            if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
-                return Ok(mms_bytes);
-            }
-        } else {
-            let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
-            if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
-                return Ok(edge_bytes);
-            }
-        }
-        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || err_text.contains("model is still loading") {
-            bail!("VoxCPM model is still loading weights into memory. Please wait a moment and try again, or switch to 'Edge TTS (Crystal-Clear)' in Settings.");
-        }
-        return Err(provider_error(status, &err_text));
-    }
-    Ok(res.bytes().await?.to_vec())
 }
 
 #[cfg(test)]
@@ -905,134 +681,6 @@ mod tests {
             gpt_sovits_base("  https://gsv.example.com/tts/ "),
             "https://gsv.example.com"
         );
-    }
-
-    #[test]
-    fn voxcpm_base_normalizes_urls() {
-        assert_eq!(voxcpm_base("127.0.0.1:8000"), "http://127.0.0.1:8000");
-        assert_eq!(voxcpm_base("http://127.0.0.1:8000/"), "http://127.0.0.1:8000");
-        assert_eq!(
-            voxcpm_base("http://127.0.0.1:8000/v1"),
-            "http://127.0.0.1:8000"
-        );
-        assert_eq!(
-            voxcpm_base("http://127.0.0.1:8000/v1/audio/speech/"),
-            "http://127.0.0.1:8000"
-        );
-        assert_eq!(
-            voxcpm_base("  https://vox.example.com/audio/speech "),
-            "https://vox.example.com"
-        );
-    }
-
-    #[test]
-    fn voxcpm_mime_types() {
-        assert_eq!(audio_mime("C:\\ref\\a.wav"), "audio/wav");
-        assert_eq!(audio_mime("a.MP3"), "audio/mpeg");
-        assert_eq!(audio_mime("a.flac"), "audio/flac");
-        assert_eq!(audio_mime("a.ogg"), "audio/ogg");
-        assert_eq!(audio_mime("a.m4a"), "audio/mp4");
-        assert_eq!(audio_mime("no-extension"), "audio/wav");
-    }
-
-    #[tokio::test]
-    async fn voxcpm_posts_openai_speech_with_control_and_reference() {
-        let dir = std::env::temp_dir().join("videogen_voxcpm_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let ref_path = dir.join("ref.wav");
-        std::fs::write(&ref_path, b"RIFF\x24\x00\x00\x00WAVEfmt ").unwrap();
-        let ref_arg = ref_path.to_string_lossy().into_owned();
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let req = read_request(&mut stream);
-            assert!(
-                req.starts_with("POST /v1/audio/speech "),
-                "unexpected request: {req}"
-            );
-            assert!(req.contains("\"input\":\"(A warm narrator)A test line.\""));
-            assert!(req.contains("\"voice\":\"default\""));
-            assert!(req.contains("\"response_format\":\"wav\""));
-            assert!(req.contains("\"ref_audio\":\"data:audio/wav;base64,"));
-            assert!(req.contains("\"ref_text\":\"hello there\""));
-            assert!(req.contains("\"seed\":42"));
-            assert!(req.contains("\"cfg_value\":2.0"));
-            assert!(req.contains("\"inference_timesteps\":10"));
-            let wav = b"RIFF\x24\x00\x00\x00WAVEfmt ";
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        wav.len()
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-            stream.write_all(wav).unwrap();
-        });
-
-        let mut s = Settings::default();
-        s.tts_kind = TtsKind::VoxCpm;
-        s.voxcpm_url = format!("http://{addr}/v1");
-        s.voxcpm_description = "A warm narrator".into();
-        s.voxcpm_ref_audio = ref_arg;
-        s.voxcpm_ref_text = "hello there".into();
-
-        let bytes = voxcpm(&s, "A test line.").await.unwrap();
-        assert!(bytes.starts_with(b"RIFF"));
-        assert_eq!(audio_ext(&bytes), "wav");
-        server.join().unwrap();
-    }
-
-    #[tokio::test]
-    async fn voxcpm_works_without_reference_audio() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let req = read_request(&mut stream);
-            assert!(req.contains("\"input\":\"Zero-shot line.\""));
-            assert!(!req.contains("ref_audio"));
-            assert!(!req.contains("ref_text"));
-            let wav = b"RIFF\x24\x00\x00\x00WAVEfmt ";
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        wav.len()
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-            stream.write_all(wav).unwrap();
-        });
-
-        let mut s = Settings::default();
-        s.tts_kind = TtsKind::VoxCpm;
-        s.voxcpm_url = format!("http://{addr}");
-        let bytes = voxcpm(&s, "Zero-shot line.").await.unwrap();
-        assert!(bytes.starts_with(b"RIFF"));
-        server.join().unwrap();
-    }
-
-    #[tokio::test]
-    async fn voxcpm_reports_connection_refused() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let mut s = Settings::default();
-        s.tts_kind = TtsKind::VoxCpm;
-        s.voxcpm_url = format!("http://{addr}");
-
-        let err = format!("{:#}", voxcpm(&s, "hi").await.unwrap_err());
-        assert!(
-            err.contains("connection refused") || err.contains("nothing is listening"),
-            "unexpected error: {err}"
-        );
-        assert!(err.contains("voxcpm_server.py"), "unexpected error: {err}");
     }
 
     #[tokio::test]

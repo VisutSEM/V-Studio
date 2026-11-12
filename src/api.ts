@@ -22,47 +22,17 @@ export interface Settings {
   llm_kind: "gemini" | "open_ai" | "anthropic" | "open_ai_compatible";
   llm_model: string; llm_base_url: string;
   cf_account_id: string; cf_image_model: string;
-  tts_kind: "azure" | "gpt_sovits" | "voxcpm" | "edge_tts" | "meta_mms" | "kiri_tts";
+  tts_kind: "azure" | "gpt_sovits" | "edge_tts" | "meta_mms" | "kiri_tts";
   azure_region: string;
   kiri_base_url: string; kiri_model: string; kiri_voice: string; kiri_speed: number;
   gpt_sovits_url: string; gpt_sovits_ref_audio: string; gpt_sovits_prompt_text: string;
   gpt_sovits_prompt_lang: string; gpt_sovits_text_lang: string; gpt_sovits_speed: number;
-  voxcpm_url: string; voxcpm_model: string; voxcpm_description: string;
-  voxcpm_ref_audio: string; voxcpm_ref_text: string;
-  voxcpm_cfg: number; voxcpm_steps: number; voxcpm_device: string;
   subtitles_enabled: boolean;
   output_dir: string;
   theme: "system" | "light" | "dark";
 }
 export interface SettingsView extends Settings {
   has_llm_key: boolean; has_cf_token: boolean; has_azure_key: boolean; has_kiri_key: boolean;
-}
-
-export interface VoxCpmSetupStatus {
-  is_ready: boolean;
-  server_running: boolean;
-  python_found: boolean;
-  python_path: string | null;
-  has_voxcpm: boolean;
-  has_torch: boolean;
-  torch_cuda: boolean;
-  torch_version: string;
-  gpu_name: string | null;
-  vram_mb: number;
-  system_ram_mb: number;
-  has_recommended_gpu: boolean;
-  can_install: boolean;
-  hardware_warning?: string | null;
-  is_portable: boolean;
-  message: string;
-}
-
-export interface VoxCpmSetupProgress {
-  step: string;
-  percent: number;
-  log: string;
-  is_done: boolean;
-  error?: string | null;
 }
 
 export const api = {
@@ -97,20 +67,6 @@ export const api = {
   exportVideo: (id: string, dest?: string | null) => invoke<string>("export_video", { id, dest: dest ?? null }),
   saveSceneRecording: (sceneId: number, audioBase64: string) =>
     invoke<number>("save_scene_recording", { sceneId, audioBase64 }),
-  saveVoxcpmRecording: (audioBase64: string) =>
-    invoke<string>("save_voxcpm_recording", { audioBase64 }),
-  getGpuInfo: () =>
-    invoke<{
-      has_nvidia: boolean;
-      gpu_name: string;
-      vram_mb: number;
-      torch_cuda_available: boolean;
-      torch_version: string;
-    }>("get_gpu_info"),
-  getVoxcpmSetupStatus: () => invoke<VoxCpmSetupStatus>("get_voxcpm_setup_status"),
-  setupVoxcpmEngine: () => invoke<string>("setup_voxcpm_engine"),
-  verifyVoxcpmModel: () => invoke<{ ok: boolean; filename: string; size_mb: number; message: string }>("verify_voxcpm_model"),
-  deleteVoxcpmModel: () => invoke<boolean>("delete_voxcpm_model"),
   openOutputDir: (path?: string | null) => invoke<void>("open_output_dir", { path: path ?? null }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   saveSettings: (
@@ -120,8 +76,6 @@ export const api = {
 };
 
 export const onProgress = (cb: (p: Progress) => void) => listen<Progress>("pipeline-progress", (e) => cb(e.payload));
-export const onVoxcpmSetupProgress = (cb: (p: VoxCpmSetupProgress) => void) =>
-  listen<VoxCpmSetupProgress>("voxcpm-setup-progress", (e) => cb(e.payload));
 
 export const fileUrl = (dir: string, rel: string) => convertFileSrc(`${dir.replace(/\\/g, "/")}/${rel}`);
 

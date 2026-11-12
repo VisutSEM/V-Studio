@@ -25,8 +25,6 @@ pub enum LlmKind {
 pub enum TtsKind {
     Azure,
     GptSovits,
-    #[serde(rename = "voxcpm")]
-    VoxCpm,
     #[serde(rename = "edge_tts")]
     EdgeTts,
     #[serde(rename = "meta_mms")]
@@ -58,15 +56,6 @@ pub struct Settings {
     pub gpt_sovits_prompt_lang: String,
     pub gpt_sovits_text_lang: String,
     pub gpt_sovits_speed: f32,
-    // VoxCPM 2 local server (OpenAI-compatible POST /v1/audio/speech)
-    pub voxcpm_url: String,
-    pub voxcpm_model: String,
-    pub voxcpm_description: String,
-    pub voxcpm_ref_audio: String,
-    pub voxcpm_ref_text: String,
-    pub voxcpm_cfg: f32,
-    pub voxcpm_steps: u32,
-    pub voxcpm_device: String,
     // Subtitles in video
     pub subtitles_enabled: bool,
     // Video Output / Export directory
@@ -83,7 +72,7 @@ impl Default for Settings {
             llm_base_url: String::new(),
             cf_account_id: String::new(),
             cf_image_model: "@cf/black-forest-labs/flux-1-schnell".into(),
-            tts_kind: TtsKind::Azure,
+            tts_kind: TtsKind::EdgeTts,
             azure_region: "southeastasia".into(),
             kiri_base_url: "https://api.kiritts.com/v1".into(),
             kiri_model: "kiritts".into(),
@@ -95,14 +84,6 @@ impl Default for Settings {
             gpt_sovits_prompt_lang: "en".into(),
             gpt_sovits_text_lang: "auto".into(),
             gpt_sovits_speed: 1.0,
-            voxcpm_url: "http://127.0.0.1:8000".into(),
-            voxcpm_model: "openbmb/VoxCPM2".into(),
-            voxcpm_description: String::new(),
-            voxcpm_ref_audio: String::new(),
-            voxcpm_ref_text: String::new(),
-            voxcpm_cfg: 2.0,
-            voxcpm_steps: 10,
-            voxcpm_device: "auto".into(),
             subtitles_enabled: true,
             output_dir: crate::render::default_output_dir().to_string_lossy().to_string(),
             theme: "system".into(),
@@ -269,12 +250,12 @@ pub async fn test_tts(
                 "Maly"
             }
         }
-        TtsKind::MetaMms | TtsKind::VoxCpm | TtsKind::GptSovits => "",
+        TtsKind::MetaMms | TtsKind::GptSovits => "",
     };
     let key = match s.tts_kind {
         TtsKind::Azure => Some(override_key(api_key, azure_key)?),
         TtsKind::KiriTts => Some(override_key(api_key, kiri_key)?),
-        TtsKind::EdgeTts | TtsKind::MetaMms | TtsKind::GptSovits | TtsKind::VoxCpm => None,
+        TtsKind::EdgeTts | TtsKind::MetaMms | TtsKind::GptSovits => None,
     };
     let bytes = crate::ai::tts(&s, key.as_deref(), voice, test_text, lang, false).await?;
     let mime = if bytes.starts_with(b"RIFF") {

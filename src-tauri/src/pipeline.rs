@@ -307,7 +307,6 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
     );
 
     let concurrency = match s.tts_kind {
-        settings::TtsKind::VoxCpm => 1,
         settings::TtsKind::MetaMms => 2,
         settings::TtsKind::EdgeTts | settings::TtsKind::Azure | settings::TtsKind::GptSovits | settings::TtsKind::KiriTts => 4,
     };
