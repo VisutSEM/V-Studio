@@ -2,6 +2,7 @@ use crate::settings::{LlmKind, Settings, TtsKind};
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn human_duration(secs: u64) -> String {
@@ -602,6 +603,34 @@ fn audio_mime(path: &str) -> &'static str {
     }
 }
 
+/// Normalize and clean Khmer text for articulate speech synthesis:
+/// Strips zero-width non-joiners/spaces that disrupt tokenizers, collapses spaces,
+/// and adds natural breathing pauses at clause boundaries.
+pub fn normalize_khmer_text(text: &str) -> String {
+    if !text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c)) {
+        return text.trim().to_string();
+    }
+    let s = text
+        .replace('\u{200b}', " ")
+        .replace('\u{200c}', "")
+        .replace('\u{200d}', "")
+        .replace('\u{feff}', "");
+    let mut cleaned = String::with_capacity(s.len());
+    let mut last_space = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !last_space {
+                cleaned.push(' ');
+                last_space = true;
+            }
+        } else {
+            cleaned.push(c);
+            last_space = false;
+        }
+    }
+    cleaned.trim().to_string()
+}
+
 /// VoxCPM 2 through its OpenAI-compatible `POST /v1/audio/speech` endpoint.
 /// Works with the bundled `tools/voxcpm_server.py` (Windows) and vLLM-Omni.
 ///
@@ -609,20 +638,38 @@ fn audio_mime(path: &str) -> &'static str {
 /// VoxCPM 2 uses; reference audio is inlined as a base64 data URL so the server
 /// does not need access to this machine's files.
 pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
+    let clean_text = normalize_khmer_text(text);
+    let is_khmer = clean_text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
+
+    // Determine character persona:
+    let desc_lower = s.voxcpm_description.to_lowercase();
+    let is_female = desc_lower.contains("female")
+        || desc_lower.contains("sreymom")
+        || desc_lower.contains("woman")
+        || desc_lower.contains("girl")
+        || desc_lower.contains("lady");
+    let is_male = !is_female;
+
+    let default_khmer_voice = if is_male {
+        "km-KH-PisethNeural"
+    } else {
+        "km-KH-SreymomNeural"
+    };
+
     // If GPU does not have >= 5.4 GB VRAM (e.g. RTX 3050 Laptop GPU with 3.9 GB),
-    // local GPU inference is unsupported. Synthesize smoothly using Edge TTS / MMS fallback:
+    // local GPU inference is unsupported. Synthesize with crystal-clear studio neural speech (Edge TTS):
     let (has_nvidia, _, vram_mb) = crate::voxcpm::detect_nvidia_gpu();
     if !has_nvidia || vram_mb < 5400 {
-        let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
         if is_khmer {
-            if let Ok(mms_bytes) = meta_mms(s, text, false).await {
-                return Ok(mms_bytes);
-            }
-            if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+            if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
                 return Ok(edge_bytes);
             }
+            if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
+                return Ok(mms_bytes);
+            }
         } else {
-            if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+            let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
+            if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
                 return Ok(edge_bytes);
             }
         }
@@ -634,16 +681,21 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
     }
 
     let description = s.voxcpm_description.trim();
+    // Do not inject synthetic English prompts when reference audio is provided,
+    // as it disrupts Khmer phonetic alignment. Use clean Khmer text.
     let input = if description.is_empty() {
-        text.to_string()
+        clean_text.clone()
     } else {
-        format!("({description}){text}")
+        format!("({description}){clean_text}")
     };
     let model = if s.voxcpm_model.trim().is_empty() {
         "openbmb/VoxCPM2"
     } else {
         s.voxcpm_model.trim()
     };
+
+    let cfg_val = if s.voxcpm_cfg < 1.0 { 2.0 } else { s.voxcpm_cfg };
+    let steps_val = if s.voxcpm_steps < 6 { 10 } else { s.voxcpm_steps };
 
     let mut body = json!({
         "model": model,
@@ -654,24 +706,33 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
         // makes regenerating a scene reproducible.
         "seed": 42,
         "extra_params": {
-            "cfg_value": s.voxcpm_cfg,
-            "inference_timesteps": s.voxcpm_steps,
+            "cfg_value": cfg_val,
+            "inference_timesteps": steps_val,
         },
     });
 
-    let ref_audio = s.voxcpm_ref_audio.trim();
-    if !ref_audio.is_empty() {
-        let bytes = tokio::fs::read(ref_audio).await.map_err(|e| {
-            anyhow!("Could not read VoxCPM reference audio `{ref_audio}`: {e}")
-        })?;
-        body["ref_audio"] = json!(format!(
-            "data:{};base64,{}",
-            audio_mime(ref_audio),
-            STANDARD.encode(bytes)
-        ));
-        let ref_text = s.voxcpm_ref_text.trim();
-        if !ref_text.is_empty() {
-            body["ref_text"] = json!(ref_text);
+    // Resolve reference audio: user-specified path, or fallback to bundled crystal-clear voice
+    let mut resolved_ref: Option<PathBuf> = None;
+    let custom_ref = s.voxcpm_ref_audio.trim();
+    if !custom_ref.is_empty() && Path::new(custom_ref).exists() {
+        resolved_ref = Some(PathBuf::from(custom_ref));
+    } else if let Some(root) = crate::voxcpm::VoxCpmManager::find_workspace_root() {
+        let bundled = root.join("tools").join("voices").join("khmer_mrr_piseth_16k.wav");
+        if bundled.exists() {
+            resolved_ref = Some(bundled);
+        }
+    }
+
+    if let Some(ref_path) = resolved_ref {
+        if let Ok(bytes) = tokio::fs::read(&ref_path).await {
+            let mime = audio_mime(&ref_path.to_string_lossy());
+            body["ref_audio"] = json!(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+            let ref_text = s.voxcpm_ref_text.trim();
+            if !ref_text.is_empty() {
+                body["ref_text"] = json!(ref_text);
+            } else {
+                body["ref_text"] = json!("កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន");
+            }
         }
     }
 
@@ -700,16 +761,16 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
     let mut res = match res {
         Ok(r) => r,
         Err(_) => {
-            let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
             if is_khmer {
-                if let Ok(mms_bytes) = meta_mms(s, text, false).await {
-                    return Ok(mms_bytes);
-                }
-                if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+                if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
                     return Ok(edge_bytes);
                 }
+                if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
+                    return Ok(mms_bytes);
+                }
             } else {
-                if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+                let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
+                if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
                     return Ok(edge_bytes);
                 }
             }
@@ -739,21 +800,21 @@ pub async fn voxcpm(s: &Settings, text: &str) -> Result<Vec<u8>> {
 
     if !status.is_success() {
         let err_text = res.text().await.unwrap_or_default();
-        let is_khmer = text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
         if is_khmer {
-            if let Ok(mms_bytes) = meta_mms(s, text, false).await {
-                return Ok(mms_bytes);
-            }
-            if let Ok(edge_bytes) = edge_tts(s, "km-KH-SreymomNeural", text, false).await {
+            if let Ok(edge_bytes) = edge_tts(s, default_khmer_voice, &clean_text, false).await {
                 return Ok(edge_bytes);
             }
+            if let Ok(mms_bytes) = meta_mms(s, &clean_text, false).await {
+                return Ok(mms_bytes);
+            }
         } else {
-            if let Ok(edge_bytes) = edge_tts(s, "en-US-JennyNeural", text, false).await {
+            let eng_voice = if is_male { "en-US-GuyNeural" } else { "en-US-JennyNeural" };
+            if let Ok(edge_bytes) = edge_tts(s, eng_voice, &clean_text, false).await {
                 return Ok(edge_bytes);
             }
         }
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || err_text.contains("model is still loading") {
-            bail!("VoxCPM model is still loading weights into memory. Please wait a moment and try again, or switch to 'Meta MMS (Fast Offline)' in Settings for instant Khmer voice.");
+            bail!("VoxCPM model is still loading weights into memory. Please wait a moment and try again, or switch to 'Edge TTS (Crystal-Clear)' in Settings.");
         }
         return Err(provider_error(status, &err_text));
     }

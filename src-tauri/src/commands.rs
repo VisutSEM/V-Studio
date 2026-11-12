@@ -397,6 +397,8 @@ pub async fn save_voxcpm_recording(
             "-y",
             "-i",
             temp_in.to_string_lossy().as_ref(),
+            "-af",
+            "highpass=f=75,lowpass=f=7800,volume=1.2,dynaudnorm=p=0.9:m=10.0",
             "-ar",
             "16000",
             "-ac",

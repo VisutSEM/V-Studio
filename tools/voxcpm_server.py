@@ -345,27 +345,53 @@ def prepare_ref_clip(path: str, max_seconds: float = 6.0) -> tuple[str, bool]:
         return path, False
 
 
+def normalize_khmer_text(text: str) -> str:
+    """Clean and normalize Khmer text for articulate speech synthesis:
+    - Normalizes zero-width spaces (\u200b) to standard spaces at phrase boundaries
+    - Normalizes whitespace and ensures proper punctuation spacing
+    - Strips invisible non-joiner codes that disrupt speech tokenizers
+    """
+    if not isinstance(text, str) or not any(0x1780 <= ord(c) <= 0x17FF for c in text):
+        return text.strip() if isinstance(text, str) else ""
+
+    import re
+    cleaned = text.replace("\u200b", " ").replace("\u200c", "").replace("\u200d", "").replace("\ufeff", "")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"([។៕!?,:;])([^\s])", r"\1 \2", cleaned)
+    return cleaned.strip()
+
+
 def synthesize(payload: dict) -> bytes:
     import gc
     import soundfile as sf
     import torch
 
-    text = payload.get("input")
-    if not isinstance(text, str) or not text.strip():
+    raw_text = payload.get("input")
+    if not isinstance(raw_text, str) or not raw_text.strip():
         raise ValueError("input text cannot be empty")
+
+    text = normalize_khmer_text(raw_text)
 
     extra = payload.get("extra_params") or {}
     if not isinstance(extra, dict):
         raise ValueError("extra_params must be an object")
-    cfg = float(extra.get("cfg_value", _args.cfg))
-    steps = int(extra.get("inference_timesteps", _args.steps))
-    # Cap steps for laptop optimization (4–20 steps, default 6)
-    steps = max(4, min(steps, 20))
+    cfg = float(extra.get("cfg_value", _args.cfg or 2.2))
+    cfg = max(1.5, min(cfg, 3.5))
+    steps = int(extra.get("inference_timesteps", _args.steps or 12))
+    # Optimal steps for high-clarity Khmer speech: 10–25 steps (default 12)
+    steps = max(10, min(steps, 25))
     seed = payload.get("seed")
     seed = int(seed) if seed is not None else None
 
     ref_audio = payload.get("ref_audio")
     ref_text = payload.get("ref_text")
+    if not ref_audio:
+        default_ref = os.path.join(os.path.dirname(__file__), "voices", "khmer_mrr_piseth_16k.wav")
+        if os.path.exists(default_ref):
+            ref_audio = default_ref
+            if not ref_text:
+                ref_text = "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន"
+
     kwargs = {
         "text": text,
         "cfg_value": cfg,
@@ -392,12 +418,12 @@ def synthesize(payload: dict) -> bytes:
     try:
         if ref_audio:
             temp_path, delete_ref = resolve_ref_audio(str(ref_audio))
-            active_ref, delete_trimmed = prepare_ref_clip(temp_path, max_seconds=4.5)
+            active_ref, delete_trimmed = prepare_ref_clip(temp_path, max_seconds=6.0)
             if delete_trimmed:
                 trimmed_path = active_ref
 
             if isinstance(ref_text, str) and ref_text.strip():
-                # Ultimate cloning: the reference clip becomes a spoken prefix.
+                # In-context cloning: the reference clip becomes a spoken prefix.
                 kwargs["prompt_wav_path"] = active_ref
                 kwargs["prompt_text"] = ref_text.strip()
             else:
@@ -635,8 +661,25 @@ class Handler(BaseHTTPRequestHandler):
             inp_text = str(payload.get("input", ""))
             is_khmer = any(0x1780 <= ord(c) <= 0x17FF for c in inp_text)
             if is_khmer:
-                log(f"VoxCPM warming up/low RAM. Synthesizing Khmer audio via Meta MMS fallback...")
+                # Primary crystal-clear fallback: Microsoft Edge Neural Khmer (studio quality)
                 try:
+                    desc_str = (str(payload.get("description", "")) + " " + str(payload.get("voice", ""))).lower()
+                    is_female = any(w in desc_str for w in ["female", "sreymom", "woman", "girl", "lady"])
+                    chosen_voice = "km-KH-SreymomNeural" if is_female else "km-KH-PisethNeural"
+                    edge_payload = dict(payload)
+                    edge_payload["voice"] = chosen_voice
+                    edge_payload["input"] = normalize_khmer_text(inp_text)
+                    log(f"Synthesizing Khmer voice ({chosen_voice}) via crystal-clear Edge Neural fallback...")
+                    audio = synthesize_edge(edge_payload)
+                    self._send(200, audio, "audio/mpeg", {"x-fallback-engine": "edge_tts"})
+                    log(f"  -> {len(audio):,} bytes MP3 (Edge Studio Khmer)")
+                    return
+                except Exception as edge_exc:
+                    log(f"Edge Khmer fallback error: {edge_exc}")
+
+                # Secondary offline fallback: Meta MMS
+                try:
+                    log("Falling back to local Meta MMS Khmer...")
                     audio = synthesize_mms(payload)
                     self._send(
                         200,
@@ -652,15 +695,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 except Exception as mms_exc:
                     log(f"MMS fallback error: {mms_exc}")
-
-                try:
-                    log("Attempting Edge TTS Khmer fallback...")
-                    audio = synthesize_edge(payload)
-                    self._send(200, audio, "audio/mpeg", {"x-fallback-engine": "edge_tts"})
-                    log(f"  -> {len(audio):,} bytes MP3 (Edge Khmer fallback)")
-                    return
-                except Exception as edge_exc:
-                    log(f"Edge fallback error: {edge_exc}")
             else:
                 try:
                     log("Synthesizing English via Edge TTS fallback...")

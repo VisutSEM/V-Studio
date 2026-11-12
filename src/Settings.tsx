@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, Settings as S, SettingsView, VoxCpmSetupStatus, VoxCpmSetupProgress, onVoxcpmSetupProgress } from "./api";
@@ -97,11 +97,34 @@ export default function SettingsPage() {
   >(() => {
     try {
       const stored = localStorage.getItem("vstudio_custom_voices");
-      if (stored) return JSON.parse(stored);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((v: any) => ({
+            ...v,
+            audioPath: v.audioPath || "tools/voices/khmer_mrr_piseth_16k.wav",
+            refText: v.refText || "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
+          }));
+        }
+      }
     } catch (_) {}
     return [
-      { id: "v1", name: "Mrr Set", audioPath: "", lang: "Khmer", isDefault: false },
-      { id: "v2", name: "Mrr rong", audioPath: "", lang: "Khmer", isDefault: true },
+      {
+        id: "v1",
+        name: "Mrr Set",
+        audioPath: "tools/voices/khmer_mrr_piseth_16k.wav",
+        refText: "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
+        lang: "Khmer",
+        isDefault: false,
+      },
+      {
+        id: "v2",
+        name: "Mrr rong",
+        audioPath: "tools/voices/khmer_mrr_piseth_16k.wav",
+        refText: "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
+        lang: "Khmer",
+        isDefault: true,
+      },
     ];
   });
 
@@ -248,7 +271,7 @@ export default function SettingsPage() {
   const playPreview = (lang: "km" | "en") => {
     const text =
       lang === "km"
-        ? (testVoiceText.trim() || "សួស្តី! នេះជាការសាកល្បងសំឡេងខ្មែរ។")
+        ? (testVoiceText.trim() || "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងខ្មែរយ៉ាងច្បាស់។")
         : "Hello! This is a voice preview for narration.";
     runTest(
       "voice",
@@ -257,8 +280,8 @@ export default function SettingsPage() {
       s.tts_kind === "azure" ? keys.azure : s.tts_kind === "kiri_tts" ? keys.kiri : "",
       () =>
         s.tts_kind === "voxcpm" && !hasEnoughVram
-          ? `Playing ${lang === "km" ? "Khmer" : "English"} sample (via fallback: GPU has ${vramGb} GB VRAM, needs 5.4 GB)`
-          : `Playing ${lang === "km" ? "Khmer" : "English"} sample`,
+          ? `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Studio Voice: GPU has ${vramGb} GB VRAM, needs 5.4 GB for local)`
+          : `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Studio Voice)`,
       { text },
     );
   };
@@ -356,20 +379,25 @@ export default function SettingsPage() {
       prev.map((v) => ({ ...v, isDefault: v.id === id }))
     );
     const selected = customVoices.find((v) => v.id === id);
-    if (selected && selected.audioPath) {
-      set({ voxcpm_ref_audio: selected.audioPath, voxcpm_ref_text: selected.refText || "" });
+    if (selected) {
+      const isMale = !/female|sreymom|woman|girl|lady/i.test(selected.name);
+      const desc = isMale
+        ? "Clear, articulate, natural Khmer male studio voice, high definition narration"
+        : "Clear, articulate, natural Khmer female studio voice, high definition narration";
+      set({
+        voxcpm_description: desc,
+        voxcpm_ref_audio: selected.audioPath || "",
+        voxcpm_ref_text: selected.refText || "",
+      });
     }
     setMsg({ text: `Default voice set to "${selected?.name || ""}"`, kind: "ok" });
   };
 
-  const handleListenVoice = (voice: { id: string; name: string; audioPath: string; lang: string }) => {
-    if (voice.audioPath) {
-      try {
-        const snd = new Audio(convertFileSrc(voice.audioPath));
-        snd.play().catch(() => {});
-        return;
-      } catch (_) {}
-    }
+  const handleListenVoice = (voice: { id: string; name: string; audioPath: string; refText?: string; lang: string }) => {
+    set({
+      voxcpm_ref_audio: voice.audioPath || "tools/voices/khmer_mrr_piseth_16k.wav",
+      voxcpm_ref_text: voice.refText || "កត្តាសំខាន់ៗ ដែលរុញច្រានឱ្យវៀតណាម ក្លាយជាតារាសេដ្ឋកិច្ច លេចធ្លោនៅអាស៊ីអាគ្នេយ៍រួមមាន",
+    });
     playPreview(voice.lang === "English" ? "en" : "km");
   };
 

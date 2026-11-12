@@ -63,6 +63,13 @@ if (Test-Path (Join-Path $ProjectRoot "tools\tts_cli.py")) {
     Write-Host "   - tools/tts_cli.py"
 }
 
+if (Test-Path (Join-Path $ProjectRoot "tools\voices")) {
+    $TargetVoices = Join-Path $OutputDir "tools\voices"
+    New-Item -ItemType Directory -Path $TargetVoices -Force | Out-Null
+    Copy-Item (Join-Path $ProjectRoot "tools\voices\*") $TargetVoices -Force
+    Write-Host "   - tools/voices"
+}
+
 # Create Setup_VoxCPM2.bat in the output directory
 $SetupBatPath = Join-Path $OutputDir "Setup_VoxCPM2.bat"
 $SetupBatContent = @'

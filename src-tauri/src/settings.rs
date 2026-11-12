@@ -101,7 +101,7 @@ impl Default for Settings {
             voxcpm_ref_audio: String::new(),
             voxcpm_ref_text: String::new(),
             voxcpm_cfg: 2.0,
-            voxcpm_steps: 6,
+            voxcpm_steps: 10,
             voxcpm_device: "auto".into(),
             subtitles_enabled: true,
             output_dir: crate::render::default_output_dir().to_string_lossy().to_string(),
