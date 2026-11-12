@@ -22,17 +22,89 @@ export interface Settings {
   llm_kind: "gemini" | "open_ai" | "anthropic" | "open_ai_compatible";
   llm_model: string; llm_base_url: string;
   cf_account_id: string; cf_image_model: string;
-  tts_kind: "azure" | "gpt_sovits" | "edge_tts" | "meta_mms" | "kiri_tts";
+  tts_kind: "auto" | "voxcpm" | "azure" | "gpt_sovits" | "edge_tts" | "meta_mms" | "kiri_tts";
   azure_region: string;
   kiri_base_url: string; kiri_model: string; kiri_voice: string; kiri_speed: number;
   gpt_sovits_url: string; gpt_sovits_ref_audio: string; gpt_sovits_prompt_text: string;
   gpt_sovits_prompt_lang: string; gpt_sovits_text_lang: string; gpt_sovits_speed: number;
+  voxcpm_url: string; voxcpm_model: string; voxcpm_mode: string; voxcpm_description: string;
+  voxcpm_ref_audio: string; voxcpm_ref_text: string; voxcpm_cfg: number; voxcpm_steps: number;
+  voxcpm_device: string; voxcpm_load_denoiser: boolean; voxcpm_vram_threshold_gb: number;
+  voxcpm_auto_fallback: boolean;
   subtitles_enabled: boolean;
+  edge_voice_km: string;
+  edge_voice_en: string;
+  edge_speed: number;
+  edge_pitch: number;
   output_dir: string;
   theme: "system" | "light" | "dark";
 }
 export interface SettingsView extends Settings {
   has_llm_key: boolean; has_cf_token: boolean; has_azure_key: boolean; has_kiri_key: boolean;
+}
+
+export interface GpuInfo {
+  has_nvidia: boolean;
+  name: string | null;
+  vram_mb: number;
+  system_ram_mb: number;
+}
+
+export interface TtsRoute {
+  engine: Settings["tts_kind"];
+  requested: Settings["tts_kind"];
+  gpu_name: string | null;
+  vram_mb: number;
+  vram_threshold_gb: number;
+  reason: string;
+}
+
+export interface VoxcpmStatus {
+  ok: boolean;
+  status: string;
+  message: string;
+}
+
+export interface VoxcpmSetupStatus {
+  is_ready: boolean;
+  server_running: boolean;
+  server_loading: boolean;
+  python_found: boolean;
+  python_path: string | null;
+  has_voxcpm: boolean;
+  has_torch: boolean;
+  torch_cuda: boolean;
+  torch_version: string;
+  gpu_name: string | null;
+  vram_mb: number;
+  system_ram_mb: number;
+  has_recommended_gpu: boolean;
+  can_install: boolean;
+  hardware_warning: string | null;
+  is_portable: boolean;
+  message: string;
+}
+
+export interface SetupProgress {
+  step: string;
+  percent: number;
+  log: string;
+  is_done: boolean;
+  error: string | null;
+}
+
+export interface ModelVerifyResult {
+  ok: boolean;
+  filename: string;
+  size_mb: number;
+  message: string;
+}
+
+export interface UpdateCheckResult {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  download_url: string;
 }
 
 export const api = {
@@ -69,13 +141,28 @@ export const api = {
     invoke<number>("save_scene_recording", { sceneId, audioBase64 }),
   openOutputDir: (path?: string | null) => invoke<void>("open_output_dir", { path: path ?? null }),
   getSettings: () => invoke<SettingsView>("get_settings"),
+  getTtsRoute: () => invoke<TtsRoute>("get_tts_route"),
+  getGpuInfo: () => invoke<GpuInfo>("get_gpu_info"),
+  getVoxcpmStatus: () => invoke<string>("get_voxcpm_status"),
+  getVoxcpmSetupStatus: () => invoke<VoxcpmSetupStatus>("get_voxcpm_setup_status"),
+  setupVoxcpmEngine: () => invoke<string>("setup_voxcpm_engine"),
+  verifyVoxcpmModel: () => invoke<ModelVerifyResult>("verify_voxcpm_model"),
+  checkVoxcpmHealth: (url?: string | null) =>
+    invoke<VoxcpmStatus>("check_voxcpm_health", { url: url ?? null }),
+  startVoxcpmServer: () => invoke<void>("start_voxcpm_server"),
+  stopVoxcpmServer: () => invoke<void>("stop_voxcpm_server"),
   saveSettings: (
     settings: Settings,
     keys: { llmApiKey?: string | null; cfApiToken?: string | null; azureTtsKey?: string | null; kiriTtsKey?: string | null },
   ) => invoke<void>("save_settings", { settings, ...keys }),
+  checkForUpdates: () => invoke<UpdateCheckResult>("check_for_updates"),
 };
 
 export const onProgress = (cb: (p: Progress) => void) => listen<Progress>("pipeline-progress", (e) => cb(e.payload));
+export const onVoxcpmSetupProgress = (cb: (p: SetupProgress) => void) =>
+  listen<SetupProgress>("voxcpm-setup-progress", (e) => cb(e.payload));
+export const onVoxcpmStatus = (cb: (s: string) => void) =>
+  listen<string>("voxcpm-status", (e) => cb(e.payload));
 
 export const fileUrl = (dir: string, rel: string) => convertFileSrc(`${dir.replace(/\\/g, "/")}/${rel}`);
 

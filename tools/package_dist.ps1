@@ -1,7 +1,12 @@
 <#
 .SYNOPSIS
     Packages VideoGen into a clean, distributable folder ready to share with others.
+.PARAMETER IncludeModel
+    Bundle the ~5 GB VoxCPM2 model weights. Off by default because of size.
 #>
+param(
+    [switch]$IncludeModel
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -54,6 +59,40 @@ if (Test-Path (Join-Path $ProjectRoot "tools\tts_cli.py")) {
     Write-Host "   - tools/tts_cli.py"
 }
 
+# VoxCPM 2 local server + reference voices (needed for GPU auto-routing)
+$VoxcpmServer = Join-Path $ProjectRoot "tools\voxcpm_server.py"
+if (Test-Path $VoxcpmServer) {
+    Copy-Item $VoxcpmServer (Join-Path $OutputDir "tools\voxcpm_server.py") -Force
+    Write-Host "   - tools/voxcpm_server.py"
+}
+
+$VoicesDir = Join-Path $ProjectRoot "tools\voices"
+if (Test-Path $VoicesDir) {
+    Copy-Item $VoicesDir (Join-Path $OutputDir "tools\voices") -Recurse -Force
+    Write-Host "   - tools/voices/"
+}
+
+$StartScript = Join-Path $ProjectRoot "tools\start_voxcpm.ps1"
+if (Test-Path $StartScript) {
+    Copy-Item $StartScript (Join-Path $OutputDir "tools\start_voxcpm.ps1") -Force
+    Write-Host "   - tools/start_voxcpm.ps1"
+}
+
+# Model weights are ~5 GB. Only include them when -IncludeModel is passed.
+if ($IncludeModel) {
+    $ModelDir = Join-Path $ProjectRoot "tools\models\VoxCPM2"
+    if (Test-Path $ModelDir) {
+        $TargetModel = Join-Path $OutputDir "tools\models\VoxCPM2"
+        New-Item -ItemType Directory -Path $TargetModel -Force | Out-Null
+        Copy-Item (Join-Path $ModelDir "*") $TargetModel -Recurse -Force
+        Write-Host "   - tools/models/VoxCPM2/ (large model weights)"
+    } else {
+        Write-Host "   - WARNING: -IncludeModel set but tools\models\VoxCPM2 was not found." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "   - (skipped model weights; pass -IncludeModel to bundle them)"
+}
+
 # Create README_FIRST.txt
 $ReadmePath = Join-Path $OutputDir "README_FIRST.txt"
 $ReadmeContent = @'
@@ -65,6 +104,12 @@ HOW TO RUN:
 1. Double-click 'videogen.exe' to launch VideoGen.
 2. Go to 'Settings' (gear icon on sidebar) -> 'Voice'.
 3. Voice Options:
+   - Auto (Recommended): Uses local VoxCPM 2 on NVIDIA GPUs with 5.5 GB+ VRAM,
+     otherwise falls back to Edge TTS automatically. The Settings screen shows
+     the detected GPU and the active route.
+   - VoxCPM 2: Local AI voice, no cloud key. Needs Python 3.11/3.12 + NVIDIA GPU.
+     Use 'Install Local Voice Engine' in Settings to set it up, or start the
+     bundled server manually:  python tools\voxcpm_server.py
    - Edge TTS: Free, crystal-clear cloud neural speech in Khmer (Piseth & Sreymom) and English.
    - Meta MMS (Khmer CPU): Ultra-fast offline Khmer speech on any laptop CPU.
    - Kiri TTS / Azure Speech: Cloud AI voices with API keys.
@@ -72,6 +117,9 @@ HOW TO RUN:
 REQUIREMENTS:
 - Windows 10 or 11 (64-bit).
 - Internet connection for Edge TTS, Gemini, or Cloud AI features.
+- Optional for local VoxCPM 2 voices: NVIDIA GPU with 5.5 GB+ VRAM, CUDA 12,
+  and Python 3.11/3.12. Model weights are downloaded on first use unless the
+  package was built with -IncludeModel.
 ===============================================================================
 '@
 Set-Content -Path $ReadmePath -Value $ReadmeContent -Encoding UTF8

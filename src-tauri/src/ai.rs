@@ -113,9 +113,11 @@ pub async fn llm_generate(
 
     let text = match s.llm_kind {
         LlmKind::Gemini => {
+            let model_raw = s.llm_model.trim();
+            let model_clean = model_raw.strip_prefix("models/").unwrap_or(model_raw);
             let url = format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-                s.llm_model
+                model_clean
             );
             let mut body = json!({
                 "systemInstruction": { "parts": [{ "text": system }] },
@@ -286,6 +288,20 @@ pub async fn tts(
     slow: bool,
 ) -> Result<Vec<u8>> {
     match s.tts_kind {
+        TtsKind::Auto => match crate::tts_router::effective_kind(s) {
+            TtsKind::VoxCpm => voxcpm(s, voice, text, lang, slow).await,
+            _ => {
+                let v = if !voice.trim().is_empty() {
+                    voice
+                } else if lang == "en" {
+                    &s.edge_voice_en
+                } else {
+                    &s.edge_voice_km
+                };
+                edge_tts(v, text, slow, s.edge_speed, s.edge_pitch).await
+            }
+        },
+        TtsKind::VoxCpm => voxcpm(s, voice, text, lang, slow).await,
         TtsKind::Azure => {
             let key = azure_key
                 .ok_or_else(|| anyhow!("Missing Azure speech key. Save it in Settings."))?;
@@ -296,7 +312,16 @@ pub async fn tts(
                 .ok_or_else(|| anyhow!("Missing Kiri TTS API key. Save it in Settings."))?;
             kiri_tts(s, key, voice, text, slow).await
         }
-        TtsKind::EdgeTts => edge_tts(voice, text, slow).await,
+        TtsKind::EdgeTts => {
+            let v = if !voice.trim().is_empty() {
+                voice
+            } else if lang == "en" {
+                &s.edge_voice_en
+            } else {
+                &s.edge_voice_km
+            };
+            edge_tts(v, text, slow, s.edge_speed, s.edge_pitch).await
+        }
         TtsKind::MetaMms => meta_mms(text, slow).await,
         TtsKind::GptSovits => gpt_sovits(s, text, lang, slow).await,
     }
@@ -348,7 +373,14 @@ fn find_python(root: &Path) -> PathBuf {
     PathBuf::from("python")
 }
 
-async fn run_tts_cli(engine: &str, voice: &str, text: &str, slow: bool) -> Result<Vec<u8>> {
+async fn run_tts_cli(
+    engine: &str,
+    voice: &str,
+    text: &str,
+    slow: bool,
+    speed: &str,
+    pitch: &str,
+) -> Result<Vec<u8>> {
     let root = find_workspace_root()
         .ok_or_else(|| anyhow!("Could not locate VideoGen workspace or tools/tts_cli.py"))?;
     let python = find_python(&root);
@@ -377,6 +409,12 @@ async fn run_tts_cli(engine: &str, voice: &str, text: &str, slow: bool) -> Resul
     if slow {
         cmd.arg("--slow");
     }
+    if !speed.is_empty() {
+        cmd.arg("--speed").arg(speed);
+    }
+    if !pitch.is_empty() {
+        cmd.arg("--pitch").arg(pitch);
+    }
 
     let output = cmd.output().await?;
     if !output.status.success() {
@@ -394,6 +432,8 @@ pub async fn edge_tts(
     voice: &str,
     text: &str,
     slow: bool,
+    speed_pct: i32,
+    pitch_hz: i32,
 ) -> Result<Vec<u8>> {
     let clean_text = normalize_khmer_text(text);
     let voice_name = if voice.trim().is_empty() {
@@ -401,7 +441,17 @@ pub async fn edge_tts(
     } else {
         voice.trim()
     };
-    run_tts_cli("edge_tts", voice_name, &clean_text, slow).await
+    let speed_arg = if speed_pct >= 0 {
+        format!("+{speed_pct}%")
+    } else {
+        format!("{speed_pct}%")
+    };
+    let pitch_arg = if pitch_hz >= 0 {
+        format!("+{pitch_hz}Hz")
+    } else {
+        format!("{pitch_hz}Hz")
+    };
+    run_tts_cli("edge_tts", voice_name, &clean_text, slow, &speed_arg, &pitch_arg).await
 }
 
 /// Meta MMS (Massively Multilingual Speech - fast local CPU).
@@ -410,7 +460,7 @@ pub async fn meta_mms(
     slow: bool,
 ) -> Result<Vec<u8>> {
     let clean_text = normalize_khmer_text(text);
-    run_tts_cli("meta_mms", "", &clean_text, slow).await
+    run_tts_cli("meta_mms", "", &clean_text, slow, "", "").await
 }
 
 /// Kiri TTS (Blizzer - Khmer/English neural TTS API via OpenAI-compatible endpoint).
@@ -565,6 +615,227 @@ pub async fn gpt_sovits(s: &Settings, text: &str, lang: &str, slow: bool) -> Res
     let status = res.status();
     if !status.is_success() {
         return Err(provider_error(status, &res.text().await?));
+    }
+    Ok(res.bytes().await?.to_vec())
+}
+
+/// Normalize the URL typed in Settings: add `http://` if missing and accept a
+/// full `/v1/audio/speech` or `/v1` endpoint by trimming it back to the root.
+fn voxcpm_base(url: &str) -> String {
+    let mut base = url.trim().trim_end_matches('/').to_string();
+    for suffix in ["/v1/audio/speech", "/audio/speech", "/v1"] {
+        if let Some(root) = base.strip_suffix(suffix) {
+            base = root.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if !base.is_empty() && !base.starts_with("http://") && !base.starts_with("https://") {
+        base = format!("http://{base}");
+    }
+    base
+}
+
+/// MIME type for a reference clip, used when inlining it as a data URL.
+fn audio_mime(path: &str) -> &'static str {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        _ => "audio/wav",
+    }
+}
+
+fn edge_voice_for(lang: &str, voice: &str, slow: bool) -> String {
+    let requested = voice.trim();
+    if requested.starts_with("km-") || requested.starts_with("en-") {
+        return requested.to_string();
+    }
+    if lang == "km" {
+        "km-KH-SreymomNeural".to_string()
+    } else if slow {
+        "en-US-GuyNeural".to_string()
+    } else {
+        "en-US-JennyNeural".to_string()
+    }
+}
+
+/// Last-resort synthesis when the local VoxCPM 2 server is unavailable.
+async fn voxcpm_fallback(
+    voice: &str,
+    text: &str,
+    lang: &str,
+    slow: bool,
+) -> Result<Vec<u8>> {
+    let edge_voice = edge_voice_for(lang, voice, slow);
+    match edge_tts(&edge_voice, text, slow, 0, 0).await {
+        Ok(bytes) => Ok(bytes),
+        Err(edge_err) if lang == "km" => meta_mms(text, slow)
+            .await
+            .map_err(|mms_err| anyhow!("Edge TTS failed ({edge_err}); Meta MMS failed ({mms_err})")),
+        Err(edge_err) => Err(edge_err),
+    }
+}
+
+/// VoxCPM 2 through its OpenAI-compatible `POST /v1/audio/speech` endpoint.
+///
+/// `voxcpm_mode` follows VOXCPM2_BEST_SETTINGS.md:
+/// - `design`: `(voice description)` prefix, no reference audio.
+/// - `clone_controllable`: reference audio + `(style)` prefix.
+/// - `clone_ultimate`: reference audio + exact transcript.
+/// - `auto`: clone when a reference clip exists, otherwise design.
+pub async fn voxcpm(s: &Settings, voice: &str, text: &str, lang: &str, slow: bool) -> Result<Vec<u8>> {
+    let clean_text = normalize_khmer_text(text);
+    if clean_text.trim().is_empty() {
+        bail!("VoxCPM 2: narration text is empty");
+    }
+
+    let base = voxcpm_base(&s.voxcpm_url);
+    if base.is_empty() {
+        bail!("VoxCPM 2 server URL is missing (Settings → Voice)");
+    }
+
+    let requested_mode = s.voxcpm_mode.trim().to_ascii_lowercase();
+    let custom_ref = s.voxcpm_ref_audio.trim();
+    let mut ref_path: Option<PathBuf> = if !custom_ref.is_empty() && Path::new(custom_ref).exists() {
+        Some(PathBuf::from(custom_ref))
+    } else if let Some(root) = crate::voxcpm::VoxCpmManager::find_workspace_root() {
+        let bundled = root.join("tools").join("voices").join("khmer_mrr_piseth_16k.wav");
+        if bundled.exists() {
+            Some(bundled)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mode = match requested_mode.as_str() {
+        "clone_ultimate" | "clone_controllable" | "design" => requested_mode.as_str(),
+        _ if ref_path.is_some() => "clone_ultimate",
+        _ => "design",
+    };
+
+    // Design mode must not send a reference clip; cloning modes need one.
+    if mode == "design" {
+        ref_path = None;
+    }
+    if mode != "design" && ref_path.is_none() {
+        // No usable reference: degrade to voice design instead of failing.
+        ref_path = None;
+    }
+
+    let style = if s.voxcpm_description.trim().is_empty() {
+        "a clear, natural adult narrator"
+    } else {
+        s.voxcpm_description.trim()
+    };
+    let input = if mode == "clone_ultimate" {
+        clean_text.clone()
+    } else {
+        format!("({style}){clean_text}")
+    };
+
+    let model = if s.voxcpm_model.trim().is_empty() {
+        "openbmb/VoxCPM2"
+    } else {
+        s.voxcpm_model.trim()
+    };
+    let cfg = if s.voxcpm_cfg < 1.0 { 2.0 } else { s.voxcpm_cfg };
+    let steps = if s.voxcpm_steps < 4 { 10 } else { s.voxcpm_steps };
+
+    let mut body = json!({
+        "model": model,
+        "input": input,
+        "voice": "default",
+        "response_format": "wav",
+        "seed": 42,
+        "extra_params": {
+            "cfg_value": cfg,
+            "inference_timesteps": steps,
+            "denoise": s.voxcpm_load_denoiser,
+        },
+    });
+
+    if let Some(ref_path) = ref_path {
+        if let Ok(bytes) = tokio::fs::read(&ref_path).await {
+            let mime = audio_mime(&ref_path.to_string_lossy());
+            body["ref_audio"] = json!(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+            let ref_text = s.voxcpm_ref_text.trim();
+            if !ref_text.is_empty() {
+                body["ref_text"] = json!(ref_text);
+            }
+        }
+    }
+
+    // A cold local server may still be loading weights; give it a short window.
+    if (base == "http://127.0.0.1:8000" || base == "http://localhost:8000")
+        && !crate::voxcpm::is_server_healthy(&base).await
+    {
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            if crate::voxcpm::is_server_healthy(&base).await {
+                break;
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let res = client
+        .post(format!("{base}/v1/audio/speech"))
+        .json(&body)
+        .send()
+        .await;
+
+    let mut res = match res {
+        Ok(r) => r,
+        Err(e) => {
+            if s.voxcpm_auto_fallback {
+                return voxcpm_fallback(voice, &clean_text, lang, slow).await;
+            }
+            bail!("Could not reach VoxCPM 2 on {base}: {e}");
+        }
+    };
+
+    let mut status = res.status();
+    // 503 usually means "model still loading"; retry briefly before falling back.
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        for _ in 0..2 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if let Ok(retry) = client
+                .post(format!("{base}/v1/audio/speech"))
+                .json(&body)
+                .send()
+                .await
+            {
+                if retry.status().is_success() {
+                    res = retry;
+                    status = res.status();
+                    break;
+                }
+            }
+        }
+    }
+
+    if !status.is_success() {
+        let err_text = res.text().await.unwrap_or_default();
+        let loading = status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || err_text.to_ascii_lowercase().contains("still loading");
+        if s.voxcpm_auto_fallback {
+            return voxcpm_fallback(voice, &clean_text, lang, slow).await;
+        }
+        if loading {
+            bail!("VoxCPM 2 is still loading weights. Wait a moment and try again, or enable Auto fallback.");
+        }
+        return Err(provider_error(status, &err_text));
     }
     Ok(res.bytes().await?.to_vec())
 }

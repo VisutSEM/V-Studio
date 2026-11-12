@@ -1,21 +1,22 @@
 use crate::{
-    ai,
+    ai, assembler, audio_post,
     db::{self, AppState, Scene},
     error::CmdResult,
-    planner, render, settings,
+    planner, render, scene_parser, settings, tts_router,
 };
 use anyhow::{bail, Result};
 use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
+    path::Path,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Clone, Serialize)]
 pub struct Progress {
@@ -245,16 +246,22 @@ async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
             bail!("Chapter {} returned no scenes", i + 1);
         }
         for sc in &g.scenes {
-            sqlx::query(
-                "INSERT INTO scenes (project_id, idx, narration, image_prompt) VALUES (?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(idx)
-            .bind(sc.narration.trim())
-            .bind(sc.image_prompt.trim())
-            .execute(&st.pool)
-            .await?;
-            idx += 1;
+            let narration = scene_parser::normalize_narration(&sc.narration);
+            if narration.is_empty() {
+                continue;
+            }
+            for part in scene_parser::split_long_scene(&narration, scene_parser::MAX_SCENE_CHARS) {
+                sqlx::query(
+                    "INSERT INTO scenes (project_id, idx, narration, image_prompt) VALUES (?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(idx)
+                .bind(part)
+                .bind(sc.image_prompt.trim())
+                .execute(&st.pool)
+                .await?;
+                idx += 1;
+            }
         }
         prev_end = g
             .scenes
@@ -278,14 +285,72 @@ pub async fn generate_voice(
     Ok(voice(&app, &state, &id).await?)
 }
 
+/// Save one synthesized scene, post-process it to 48 kHz WAV, and return the
+/// relative path + real duration. If FFmpeg post-processing fails we keep the
+/// original bytes so a usable take is never thrown away.
+async fn save_scene_audio(dir: &Path, idx: i64, bytes: &[u8]) -> Result<(String, i64)> {
+    let raw_ext = ai::audio_ext(bytes);
+    let raw_rel = format!("audio/scene_{:03}.raw.{raw_ext}", idx);
+    let raw_path = dir.join(&raw_rel);
+    tokio::fs::write(&raw_path, bytes).await?;
+
+    let wav_rel = format!("audio/scene_{:03}.wav", idx);
+    let wav_path = dir.join(&wav_rel);
+    let final_rel = match audio_post::normalize(&raw_path, &wav_path).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(&raw_path).await;
+            wav_rel
+        }
+        Err(e) => {
+            eprintln!("audio post failed for scene {idx}: {e:#}");
+            let _ = tokio::fs::remove_file(&wav_path).await;
+            let rel = format!("audio/scene_{:03}.{raw_ext}", idx);
+            let _ = tokio::fs::rename(&raw_path, dir.join(&rel)).await;
+            rel
+        }
+    };
+
+    // Remove a stale take with the other extension.
+    for ext in ["mp3", "wav"] {
+        let stale = dir.join(format!("audio/scene_{:03}.{ext}", idx));
+        if stale != dir.join(&final_rel) {
+            let _ = tokio::fs::remove_file(stale).await;
+        }
+    }
+    let _ = tokio::fs::remove_file(dir.join(format!("clips/scene_{:03}.mp4", idx))).await;
+    let ms = render::probe_ms(&dir.join(&final_rel)).await?;
+    Ok((final_rel, ms))
+}
+
 async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
     let p = db::project(&st.pool, id).await?;
     let scenes = db::scenes(&st.pool, id).await?;
     if scenes.is_empty() {
         bail!("Generate the script first");
     }
-    let s = settings::load(app);
-    let key = match s.tts_kind {
+    let mut s = settings::load(app);
+    let mut route = tts_router::resolve(&s);
+    let mut engine = route.engine;
+    // Make sure the local VoxCPM 2 server is running before we start a batch.
+    if engine == settings::TtsKind::VoxCpm {
+        let started = match app.try_state::<crate::voxcpm::VoxCpmManager>() {
+            Some(mgr) => mgr.inner().ensure_running(app).await,
+            None => Ok(()),
+        };
+        if let Err(e) = started {
+            if s.voxcpm_auto_fallback {
+                eprintln!("VoxCPM 2 unavailable, using Edge TTS for this run: {e:#}");
+                engine = settings::TtsKind::EdgeTts;
+                s.tts_kind = settings::TtsKind::EdgeTts;
+                route.engine = engine;
+            } else {
+                bail!(
+                    "VoxCPM 2 is not ready: {e:#}. Open Settings → Voice and click 'Install Local Voice Engine', or enable 'Fall back to Edge TTS'."
+                );
+            }
+        }
+    }
+    let key = match engine {
         settings::TtsKind::Azure => Some(settings::azure_key()?),
         settings::TtsKind::KiriTts => Some(settings::kiri_key()?),
         _ => None,
@@ -306,9 +371,9 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
         p.language.clone(),
     );
 
-    let concurrency = match s.tts_kind {
+    let concurrency = match engine {
         settings::TtsKind::MetaMms => 2,
-        settings::TtsKind::EdgeTts | settings::TtsKind::Azure | settings::TtsKind::GptSovits | settings::TtsKind::KiriTts => 4,
+        _ => 4,
     };
 
     let failed = each_scene(app, id, "voice", todo, concurrency, |sc| {
@@ -325,14 +390,7 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
                 ai::tts(&s2, key.as_deref(), &voice, &sc.narration, &lang, slow)
             })
             .await?;
-            let ext = ai::audio_ext(&bytes);
-            for e in ["mp3", "wav"] {
-                let _ = tokio::fs::remove_file(dir.join(format!("audio/scene_{:03}.{e}", sc.idx))).await;
-            }
-            let rel = format!("audio/scene_{:03}.{ext}", sc.idx);
-            tokio::fs::write(dir.join(&rel), &bytes).await?;
-            let ms = render::probe_ms(&dir.join(&rel)).await?;
-            let _ = tokio::fs::remove_file(dir.join(format!("clips/scene_{:03}.mp4", sc.idx))).await;
+            let (rel, ms) = save_scene_audio(&dir, sc.idx, &bytes).await?;
             sqlx::query("UPDATE scenes SET audio_path = ?, audio_ms = ? WHERE id = ?")
                 .bind(&rel)
                 .bind(ms)
@@ -346,6 +404,10 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
 
     if failed == 0 {
         db::set_stage(&st.pool, id, "VoiceReady", false).await?;
+        let updated = db::scenes(&st.pool, id).await?;
+        if let Err(e) = assembler::finalize(&dir, &p, &updated, &route).await {
+            eprintln!("assembler: {e:#}");
+        }
     }
     Ok(failed)
 }
@@ -429,8 +491,28 @@ pub async fn generate_scene_voice(
         .fetch_one(&state.pool)
         .await?;
     let p = db::project(&state.pool, &sc.project_id).await?;
-    let s = settings::load(&app);
-    let key = match s.tts_kind {
+    let mut s = settings::load(&app);
+    let mut route = tts_router::resolve(&s);
+    let mut engine = route.engine;
+    if engine == settings::TtsKind::VoxCpm {
+        let started = match app.try_state::<crate::voxcpm::VoxCpmManager>() {
+            Some(mgr) => mgr.inner().ensure_running(&app).await,
+            None => Ok(()),
+        };
+        if let Err(e) = started {
+            if s.voxcpm_auto_fallback {
+                eprintln!("VoxCPM 2 unavailable, using Edge TTS for this scene: {e:#}");
+                engine = settings::TtsKind::EdgeTts;
+                s.tts_kind = settings::TtsKind::EdgeTts;
+                route.engine = engine;
+            } else {
+                return Err(crate::error::err(format!(
+                    "VoxCPM 2 is not ready: {e:#}. Open Settings → Voice and click 'Install Local Voice Engine', or enable 'Fall back to Edge TTS'."
+                )));
+            }
+        }
+    }
+    let key = match engine {
         settings::TtsKind::Azure => Some(settings::azure_key()?),
         settings::TtsKind::KiriTts => Some(settings::kiri_key()?),
         _ => None,
@@ -443,20 +525,20 @@ pub async fn generate_scene_voice(
         ai::tts(&s, key.as_deref(), &p.voice, &sc.narration, &p.language, slow)
     })
     .await?;
-    let ext = ai::audio_ext(&bytes);
-    for e in ["mp3", "wav"] {
-        let _ = tokio::fs::remove_file(dir.join(format!("audio/scene_{:03}.{e}", sc.idx))).await;
-    }
-    let rel = format!("audio/scene_{:03}.{ext}", sc.idx);
-    tokio::fs::write(dir.join(&rel), &bytes).await?;
-    let ms = render::probe_ms(&dir.join(&rel)).await?;
-    let _ = tokio::fs::remove_file(dir.join(format!("clips/scene_{:03}.mp4", sc.idx))).await;
+    let (rel, ms) = save_scene_audio(&dir, sc.idx, &bytes).await?;
     sqlx::query("UPDATE scenes SET audio_path = ?, audio_ms = ? WHERE id = ?")
         .bind(&rel)
         .bind(ms)
         .bind(sc.id)
         .execute(&state.pool)
         .await?;
+
+    let updated = db::scenes(&state.pool, &sc.project_id).await?;
+    if updated.iter().all(|s| s.audio_path.is_some()) {
+        if let Err(e) = assembler::finalize(&dir, &p, &updated, &route).await {
+            eprintln!("assembler: {e:#}");
+        }
+    }
     Ok(())
 }
 

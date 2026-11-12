@@ -6,11 +6,11 @@ import asyncio
 import os
 import sys
 
-def run_edge_tts(text: str, voice: str, out_path: str, slow: bool = False) -> None:
+def run_edge_tts(text: str, voice: str, out_path: str, slow: bool = False, speed: str = "", pitch: str = "") -> None:
     import edge_tts
 
-    rate = "-10%" if slow else "+0%"
-    pitch = "-2Hz" if slow else "+0Hz"
+    rate = speed if speed else ("-10%" if slow else "+0%")
+    pitch_val = pitch if pitch else ("-2Hz" if slow else "+0Hz")
     
     # Try preferred voice; fallback to km-KH-SreymomNeural if it fails
     voices_to_try = [voice]
@@ -21,7 +21,7 @@ def run_edge_tts(text: str, voice: str, out_path: str, slow: bool = False) -> No
     for v in voices_to_try:
         try:
             async def _synth():
-                comm = edge_tts.Communicate(text, v, rate=rate, pitch=pitch)
+                comm = edge_tts.Communicate(text, v, rate=rate, pitch=pitch_val)
                 await comm.save(out_path)
             asyncio.run(_synth())
             if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
@@ -110,12 +110,14 @@ def main():
     parser.add_argument("--api-key", default="")
     parser.add_argument("--base-url", default="https://api.kiritts.com/v1")
     parser.add_argument("--slow", action="store_true")
+    parser.add_argument("--speed", default="")
+    parser.add_argument("--pitch", default="")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 
     if args.engine == "edge_tts":
-        run_edge_tts(args.text, args.voice, args.out, args.slow)
+        run_edge_tts(args.text, args.voice, args.out, args.slow, args.speed, args.pitch)
     elif args.engine == "meta_mms":
         run_meta_mms(args.text, args.out, args.slow)
     elif args.engine == "kiri_tts":

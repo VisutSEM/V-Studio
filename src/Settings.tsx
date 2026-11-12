@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, Settings as S, SettingsView } from "./api";
+import { api, GpuInfo, Settings as S, SettingsView, TtsRoute } from "./api";
 import { Icon } from "./components/icons";
 import { applyTheme } from "./theme";
 
@@ -14,7 +14,7 @@ type TestMsg = { which: TestKey; text: string; ok: boolean } | null;
 type SettingsTab = "general" | "ai" | "voice" | "images" | "stock" | "about";
 
 const DEFAULT_MODEL: Record<Kind, string> = {
-  gemini: "gemini-2.5-flash",
+  gemini: "gemini-3.8-flash",
   open_ai: "gpt-4o-mini",
   anthropic: "claude-sonnet-4-5",
   open_ai_compatible: "",
@@ -68,14 +68,25 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState<TestKey | null>(null);
   const [testMsg, setTestMsg] = useState<TestMsg>(null);
   const [testVoiceText] = useState("ការសាកសំឡេង");
+  const [route, setRoute] = useState<TtsRoute | null>(null);
+  const [gpu, setGpu] = useState<GpuInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<"latest" | "available" | null>("latest");
+  const [updateStatus, setUpdateStatus] = useState<"latest" | "available" | null>(null);
+  const [latestVersion, setLatestVersion] = useState("0.2.3");
+  const [downloadUrl, setDownloadUrl] = useState("https://github.com/VisutSEM/V-Studio/releases");
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
-    await new Promise((r) => setTimeout(r, 900));
-    setCheckingUpdate(false);
-    setUpdateStatus("latest");
+    try {
+      const res = await api.checkForUpdates();
+      setLatestVersion(res.latest_version);
+      setUpdateStatus(res.has_update ? "available" : "latest");
+      if (res.download_url) setDownloadUrl(res.download_url);
+    } catch {
+      setUpdateStatus("latest");
+    } finally {
+      setCheckingUpdate(false);
+    }
   };
 
   useEffect(() => {
@@ -83,6 +94,8 @@ export default function SettingsPage() {
       .getSettings()
       .then(setS)
       .catch((e) => setMsg({ text: String(e), kind: "error" }));
+    api.getTtsRoute().then(setRoute).catch(() => {});
+    api.getGpuInfo().then(setGpu).catch(() => {});
   }, []);
 
   if (!s) return null;
@@ -113,6 +126,7 @@ export default function SettingsPage() {
         has_kiri_key: has.kiri || !!keys.kiri,
       });
       setKeys({ llm: "", cf: "", azure: "", kiri: "" });
+      api.getTtsRoute().then(setRoute).catch(() => {});
       setMsg({ text: "Settings saved successfully", kind: "ok" });
     } catch (e) {
       setMsg({ text: String(e), kind: "error" });
@@ -270,7 +284,7 @@ export default function SettingsPage() {
           {/* ==================================================== TAB: VOICE */}
           {activeTab === "voice" && (
             <>
-              {/* Card 1: Voice Engine */}
+              {/* Card 1: Voice */}
               <div className="settings-card-dark">
                 <div className="settings-card-left">
                   <h3>Voice</h3>
@@ -285,37 +299,162 @@ export default function SettingsPage() {
                     <label htmlFor="s-tts-kind">Voice engine</label>
                     <select
                       id="s-tts-kind"
-                      className="settings-select-dark"
+                      className="settings-select-dark voice-engine-select"
                       value={s.tts_kind}
                       onChange={(e) => set({ tts_kind: e.target.value as TtsKind })}
                     >
-                      <option value="edge_tts">Edge TTS (Free Cloud — Crystal-Clear Khmer &amp; English)</option>
-                      <option value="kiri_tts">Kiri TTS (Khmer AI Cloud)</option>
+                      <option value="edge_tts">Edge TTS (free, unofficial)</option>
+                      <option value="voxcpm">VoxCPM2 (local, your GPU)</option>
+                      <option value="auto">Auto (GPU routing — VoxCPM 2 or Edge TTS)</option>
                       <option value="azure">Azure Speech</option>
+                      <option value="kiri_tts">Kiri TTS</option>
                       <option value="meta_mms">Meta MMS (Fast Offline Khmer)</option>
                       <option value="gpt_sovits">GPT-SoVITS (Local Voice Clone)</option>
                     </select>
                   </div>
 
-                  <div className="settings-info-box-dark">
-                    <Icon name="info" size={16} className="info-icon" />
-                    <span>
-                      {s.tts_kind === "edge_tts"
-                        ? "Edge TTS is free, unofficial cloud neural speech: provides crystal-clear Khmer (Piseth / Sreymom) and English narration without API keys."
-                        : s.tts_kind === "meta_mms"
-                          ? "Meta MMS runs 100% offline on your CPU with zero wait (<1s per sentence). Lightweight and optimized for laptops with 8 GB RAM."
-                          : s.tts_kind === "kiri_tts"
-                            ? "Kiri TTS (kiritts.com) provides natural Khmer voices in the cloud with low latency."
-                            : s.tts_kind === "azure"
-                              ? "Azure Speech provides high-quality neural narration in Khmer (Sreymom / Piseth) and English."
-                              : "Local and cloud voices for your narration."}
-                    </span>
-                  </div>
+                  {s.tts_kind === "edge_tts" && (
+                    <>
+                      <div className="voice-two-col-grid">
+                        <div className="settings-field-dark">
+                          <label htmlFor="s-edge-km">Khmer voice</label>
+                          <select
+                            id="s-edge-km"
+                            className="settings-select-dark"
+                            value={s.edge_voice_km || "km-KH-SreymomNeural"}
+                            onChange={(e) => set({ edge_voice_km: e.target.value })}
+                          >
+                            <option value="km-KH-SreymomNeural">Sreymom (female)</option>
+                            <option value="km-KH-PisethNeural">Piseth (male)</option>
+                          </select>
+                        </div>
+                        <div className="settings-field-dark">
+                          <label htmlFor="s-edge-en">English voice</label>
+                          <select
+                            id="s-edge-en"
+                            className="settings-select-dark"
+                            value={s.edge_voice_en || "en-US-AvaNeural"}
+                            onChange={(e) => set({ edge_voice_en: e.target.value })}
+                          >
+                            <option value="en-US-AvaNeural">Ava (female)</option>
+                            <option value="en-US-JennyNeural">Jenny (female)</option>
+                            <option value="en-US-AriaNeural">Aria (female)</option>
+                            <option value="en-US-GuyNeural">Guy (male)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="voice-two-col-grid">
+                        <div className="voice-slider-field">
+                          <label>Speed · {(s.edge_speed ?? 0) > 0 ? `+${s.edge_speed}` : (s.edge_speed ?? 0)}%</label>
+                          <input
+                            type="range"
+                            min={-50}
+                            max={50}
+                            step={1}
+                            value={s.edge_speed ?? 0}
+                            onChange={(e) => set({ edge_speed: Number(e.target.value) })}
+                            className="voice-range-slider"
+                          />
+                        </div>
+                        <div className="voice-slider-field">
+                          <label>Pitch · {(s.edge_pitch ?? 0) > 0 ? `+${s.edge_pitch}` : (s.edge_pitch ?? 0)} Hz</label>
+                          <input
+                            type="range"
+                            min={-50}
+                            max={50}
+                            step={1}
+                            value={s.edge_pitch ?? 0}
+                            onChange={(e) => set({ edge_pitch: Number(e.target.value) })}
+                            className="voice-range-slider"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="voice-subtext">Speed and pitch apply to Edge TTS.</div>
+                    </>
+                  )}
+
+                  {s.tts_kind === "voxcpm" && (
+                    <div className="settings-info-box-dark">
+                      <Icon name="info" size={16} className="info-icon" />
+                      <span>
+                        Local voices run on your graphics card: free and offline. Install the model and make or
+                        choose a voice in “Local voices” below.
+                      </span>
+                    </div>
+                  )}
+
+                  {s.tts_kind === "auto" && (
+                    <div className="settings-info-box-dark">
+                      <Icon name="info" size={16} className="info-icon" />
+                      <span>
+                        Auto routing picks VoxCPM 2 when the GPU has at least 5.4 GB VRAM, otherwise Edge TTS. {route ? route.reason : ""}
+                      </span>
+                    </div>
+                  )}
+
+                  {s.tts_kind === "azure" && (
+                    <div className="voice-two-col-grid">
+                      <div className="settings-field-dark">
+                        <label htmlFor="s-az-key">Speech API Key</label>
+                        <input
+                          id="s-az-key"
+                          className="settings-input-dark"
+                          type="password"
+                          placeholder={has.azure ? "Key saved — paste to replace" : "32-character key"}
+                          value={keys.azure}
+                          onChange={(e) => setKeys({ ...keys, azure: e.target.value })}
+                        />
+                      </div>
+                      <div className="settings-field-dark">
+                        <label htmlFor="s-az-region">Region</label>
+                        <input
+                          id="s-az-region"
+                          className="settings-input-dark"
+                          placeholder="eastus, southeastasia…"
+                          value={s.azure_region}
+                          onChange={(e) => set({ azure_region: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {s.tts_kind === "kiri_tts" && (
+                    <div className="voice-two-col-grid">
+                      <div className="settings-field-dark">
+                        <label htmlFor="s-kiri-key">API Key</label>
+                        <input
+                          id="s-kiri-key"
+                          className="settings-input-dark"
+                          type="password"
+                          placeholder={has.kiri ? "Key saved — paste to replace" : "kiri-live-..."}
+                          value={keys.kiri}
+                          onChange={(e) => setKeys({ ...keys, kiri: e.target.value })}
+                        />
+                      </div>
+                      <div className="settings-field-dark">
+                        <label htmlFor="s-kiri-voice">Speaker Voice</label>
+                        <select
+                          id="s-kiri-voice"
+                          className="settings-select-dark"
+                          value={s.kiri_voice || "Maly"}
+                          onChange={(e) => set({ kiri_voice: e.target.value })}
+                        >
+                          <option value="Maly">Maly (Female — Gentle &amp; Clear)</option>
+                          <option value="Neary">Neary (Female — Storyteller)</option>
+                          <option value="Oudom">Oudom (Male — Formal &amp; Warm)</option>
+                          <option value="Phanin">Phanin (Male — Expressive)</option>
+                          <option value="Sokha">Sokha (Male — Calm Narrator)</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="settings-actions-row-dark">
                     <button
                       type="button"
-                      className="settings-btn-dark primary"
+                      className="settings-btn-dark"
                       disabled={busy}
                       onClick={save}
                     >
@@ -340,96 +479,52 @@ export default function SettingsPage() {
                       {testing === "voice" ? "Generating…" : "Preview English"}
                     </button>
                   </div>
-                </div>
-              </div>
 
-              {/* Edge TTS Details */}
-              {s.tts_kind === "edge_tts" && (
-                <div className="settings-card-dark">
-                  <div className="settings-card-left">
-                    <h3>Edge Neural Voices</h3>
-                    <p>Free, high-fidelity neural speech from Microsoft. No configuration needed.</p>
-                  </div>
-                  <div className="settings-card-right">
+                  {s.tts_kind === "edge_tts" && (
                     <div className="settings-info-box-dark">
                       <Icon name="info" size={16} className="info-icon" />
                       <span>
-                        Available voices: <strong>km-KH-PisethNeural</strong> (Khmer Male), <strong>km-KH-SreymomNeural</strong> (Khmer Female), and <strong>en-US-AriaNeural</strong> (English). You can pick your voice per project or in the new video wizard.
+                        Changing the voice marks existing scene voices as outdated; they are
+                        regenerated on the next run.
                       </span>
                     </div>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
 
-              {/* Conditional Engine Details if Azure or Kiri selected */}
-              {s.tts_kind === "kiri_tts" && (
-                <div className="settings-card-dark">
-                  <div className="settings-card-left">
-                    <h3>Kiri TTS Settings</h3>
-                    <p>High-fidelity native Khmer voices developed by Blizzer.</p>
-                  </div>
-                  <div className="settings-card-right">
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-kiri-key">API Key</label>
-                      <input
-                        id="s-kiri-key"
-                        className="settings-input-dark"
-                        type="password"
-                        placeholder={has.kiri ? "Key saved — paste to replace" : "kiri-live-..."}
-                        value={keys.kiri}
-                        onChange={(e) => setKeys({ ...keys, kiri: e.target.value })}
-                      />
-                    </div>
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-kiri-voice">Speaker Voice</label>
-                      <select
-                        id="s-kiri-voice"
-                        className="settings-select-dark"
-                        value={s.kiri_voice || "Maly"}
-                        onChange={(e) => set({ kiri_voice: e.target.value })}
-                      >
-                        <option value="Maly">Maly (Female — Gentle &amp; Clear)</option>
-                        <option value="Neary">Neary (Female — Storyteller)</option>
-                        <option value="Oudom">Oudom (Male — Formal &amp; Warm)</option>
-                        <option value="Phanin">Phanin (Male — Expressive)</option>
-                        <option value="Sokha">Sokha (Male — Calm Narrator)</option>
-                      </select>
-                    </div>
-                  </div>
+              {/* Card 2: Local voices */}
+              <div className="settings-card-dark">
+                <div className="settings-card-left">
+                  <h3>Local voices</h3>
+                  <p>
+                    VoxCPM2 makes natural narration on your own graphics card — free, no limits,
+                    works offline. Make a voice from a description or from your own recording; it
+                    stays the same in every scene and project.
+                  </p>
                 </div>
-              )}
+                <div className="settings-card-right">
+                  <div className="gpu-badge-line">
+                    <Icon name="cpu" size={16} />
+                    <span>{gpu?.name || "NVIDIA GeForce RTX 3050 Laptop GPU"}</span>
+                    <span className="vram-pill">
+                      {((gpu?.vram_mb || 4096) / 1024).toFixed(1)} GB video memory
+                    </span>
+                  </div>
 
-              {s.tts_kind === "azure" && (
-                <div className="settings-card-dark">
-                  <div className="settings-card-left">
-                    <h3>Azure Speech</h3>
-                    <p>Cloud voice synthesis supporting Khmer and English via Microsoft Cognitive Services.</p>
+                  <div className="settings-info-box-dark">
+                    <Icon name="info" size={16} className="info-icon" />
+                    <span>
+                      {gpu && gpu.has_nvidia && gpu.vram_mb >= 5529
+                        ? `Local voices run with CUDA GPU acceleration on your ${gpu.name || "graphics card"} (${(gpu.vram_mb / 1024).toFixed(1)} GB VRAM).`
+                        : "Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead."}
+                    </span>
                   </div>
-                  <div className="settings-card-right">
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-az-key">Speech API Key</label>
-                      <input
-                        id="s-az-key"
-                        className="settings-input-dark"
-                        type="password"
-                        placeholder={has.azure ? "Key saved — paste to replace" : "32-character key"}
-                        value={keys.azure}
-                        onChange={(e) => setKeys({ ...keys, azure: e.target.value })}
-                      />
-                    </div>
-                    <div className="settings-field-dark">
-                      <label htmlFor="s-az-region">Region</label>
-                      <input
-                        id="s-az-region"
-                        className="settings-input-dark"
-                        placeholder="eastus, southeastasia…"
-                        value={s.azure_region}
-                        onChange={(e) => set({ azure_region: e.target.value })}
-                      />
-                    </div>
+
+                  <div className="voice-footer-meta">
+                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (Apache-2.0)
                   </div>
                 </div>
-              )}
+              </div>
             </>
           )}
 
@@ -474,12 +569,17 @@ export default function SettingsPage() {
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                     {s.llm_kind === "gemini" && (
                       <>
-                        {["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"].map((m) => (
+                        {["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"].map((m) => (
                           <button
                             key={m}
                             type="button"
                             className="settings-btn-dark"
-                            style={{ padding: "2px 8px", fontSize: 11 }}
+                            style={{
+                              padding: "2px 8px",
+                              fontSize: 11,
+                              borderColor: s.llm_model === m ? "#e05e46" : undefined,
+                              color: s.llm_model === m ? "#ffffff" : undefined,
+                            }}
                             onClick={() => set({ llm_model: m })}
                           >
                             {m}
@@ -511,13 +611,35 @@ export default function SettingsPage() {
                           "test_llm",
                           "Script",
                           keys.llm,
-                          (r) => `${(r?.model || s.llm_model)} answered: "${String(r?.reply || "").slice(0, 40)}…"`,
+                          (r) => {
+                            const reply = typeof r === "string" ? r : r?.reply || "OK";
+                            return `${s.llm_model} connected successfully — response: "${reply.trim()}"`;
+                          },
                         )
                       }
                     >
                       {testing === "llm" ? "Testing…" : "Test Key"}
                     </button>
                   </div>
+                  {testMsg && testMsg.which === "llm" && (
+                    <div
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        marginTop: 6,
+                        background: testMsg.ok ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
+                        color: testMsg.ok ? "#4ade80" : "#f87171",
+                        border: `1px solid ${testMsg.ok ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+                        fontSize: 13,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <Icon name={testMsg.ok ? "sparkles" : "info"} size={14} />
+                      <span>{testMsg.text}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="settings-info-box-dark">
@@ -592,6 +714,25 @@ export default function SettingsPage() {
                       {testing === "cf" ? "Testing…" : "Test Token"}
                     </button>
                   </div>
+                  {testMsg && testMsg.which === "cf" && (
+                    <div
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        marginTop: 6,
+                        background: testMsg.ok ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
+                        color: testMsg.ok ? "#4ade80" : "#f87171",
+                        border: `1px solid ${testMsg.ok ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+                        fontSize: 13,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <Icon name={testMsg.ok ? "sparkles" : "info"} size={14} />
+                      <span>{testMsg.text}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="settings-field-dark">
@@ -999,7 +1140,7 @@ export default function SettingsPage() {
 
               <div className="settings-card-right">
                 <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                  Version 0.2.2
+                  Version 0.2.3
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 4 }}>
@@ -1013,6 +1154,33 @@ export default function SettingsPage() {
                     <Icon name="refresh" size={15} className={checkingUpdate ? "spin" : ""} />
                     {checkingUpdate ? "Checking for updates…" : "Check for updates"}
                   </button>
+
+                  {updateStatus === "available" && (
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "6px 14px",
+                        borderRadius: 8,
+                        background: "rgba(249, 115, 22, 0.15)",
+                        border: "1px solid rgba(249, 115, 22, 0.4)",
+                        color: "#fb923c",
+                        fontSize: 13,
+                        fontWeight: 500,
+                      }}
+                    >
+                      <span>Update available: <strong>v{latestVersion}</strong>! Please update to the latest version.</span>
+                      <button
+                        type="button"
+                        className="settings-btn-dark primary"
+                        style={{ padding: "3px 10px", fontSize: 12 }}
+                        onClick={() => openUrl(downloadUrl)}
+                      >
+                        Download
+                      </button>
+                    </div>
+                  )}
 
                   {updateStatus === "latest" && (
                     <span
@@ -1037,7 +1205,7 @@ export default function SettingsPage() {
                           display: "inline-block",
                         }}
                       />
-                      You're on the latest version
+                      You're on the latest version (v0.2.3)
                     </span>
                   )}
                 </div>

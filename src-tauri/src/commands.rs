@@ -1,7 +1,7 @@
 use crate::{
     db::{self, AppState, Cue, Project, Scene},
     error::{err, CmdResult},
-    planner, subs,
+    planner, scene_parser, subs,
 };
 use serde::Serialize;
 use tauri::State;
@@ -224,7 +224,7 @@ pub async fn update_scene(
     image_prompt: String,
 ) -> CmdResult<()> {
     sqlx::query("UPDATE scenes SET narration = ?, image_prompt = ? WHERE id = ?")
-        .bind(narration.trim())
+        .bind(scene_parser::normalize_narration(&narration))
         .bind(image_prompt.trim())
         .bind(scene_id)
         .execute(&state.pool)
@@ -250,7 +250,7 @@ pub async fn add_scene(
     )
     .bind(&project_id)
     .bind(next_idx)
-    .bind(narration.trim())
+    .bind(scene_parser::normalize_narration(&narration))
     .bind(image_prompt.trim())
     .execute(&state.pool)
     .await
@@ -366,6 +366,100 @@ pub async fn save_scene_recording(
         .map_err(|e| err(&e.to_string()))?;
 
     Ok(ms)
+}
+
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct UpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub download_url: String,
+}
+
+fn parse_version_parts(v: &str) -> Vec<u64> {
+    v.trim()
+        .trim_start_matches('v')
+        .split('.')
+        .filter_map(|p| p.parse::<u64>().ok())
+        .collect()
+}
+
+fn is_version_newer(latest: &str, current: &str) -> bool {
+    let l = parse_version_parts(latest);
+    let c = parse_version_parts(current);
+    for i in 0..l.len().max(c.len()) {
+        let p_l = l.get(i).copied().unwrap_or(0);
+        let p_c = c.get(i).copied().unwrap_or(0);
+        if p_l > p_c {
+            return true;
+        } else if p_l < p_c {
+            return false;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub async fn check_for_updates() -> CmdResult<UpdateCheckResult> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let client = reqwest::Client::builder()
+        .user_agent("V-Studio")
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| err(&e.to_string()))?;
+
+    let mut latest_version = current_version.clone();
+    let mut download_url = "https://github.com/VisutSEM/V-Studio/releases".to_string();
+
+    // 1. Try checking latest GitHub release
+    if let Ok(res) = client
+        .get("https://api.github.com/repos/VisutSEM/V-Studio/releases/latest")
+        .send()
+        .await
+    {
+        if res.status().is_success() {
+            if let Ok(json) = res.json::<serde_json::Value>().await {
+                if let Some(tag) = json["tag_name"].as_str() {
+                    let clean = tag.trim().trim_start_matches('v');
+                    if !clean.is_empty() {
+                        latest_version = clean.to_string();
+                    }
+                }
+                if let Some(url) = json["html_url"].as_str() {
+                    download_url = url.to_string();
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: check main branch package.json
+    if latest_version == current_version {
+        if let Ok(res) = client
+            .get("https://raw.githubusercontent.com/VisutSEM/V-Studio/main/package.json")
+            .send()
+            .await
+        {
+            if res.status().is_success() {
+                if let Ok(json) = res.json::<serde_json::Value>().await {
+                    if let Some(ver) = json["version"].as_str() {
+                        let clean = ver.trim();
+                        if !clean.is_empty() {
+                            latest_version = clean.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let has_update = is_version_newer(&latest_version, &current_version);
+
+    Ok(UpdateCheckResult {
+        current_version,
+        latest_version,
+        has_update,
+        download_url,
+    })
 }
 
 

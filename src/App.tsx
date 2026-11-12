@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ProjectCard, SettingsView } from "./api";
+import { api, ProjectCard, SettingsView, UpdateCheckResult } from "./api";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "./components/icons";
 import Wizard from "./Wizard";
 import Pipeline from "./Pipeline";
@@ -26,6 +27,8 @@ export default function App() {
   const [bannerOff, setBannerOff] = useState(
     () => localStorage.getItem(BANNER_KEY) === "1",
   );
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [dismissedUpdate, setDismissedUpdate] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -41,6 +44,14 @@ export default function App() {
 
   useEffect(() => {
     const unbind = initThemeListener();
+    api
+      .checkForUpdates()
+      .then((info) => {
+        if (info.has_update) {
+          setUpdateInfo(info);
+        }
+      })
+      .catch(() => {});
     return () => unbind();
   }, []);
 
@@ -204,6 +215,34 @@ export default function App() {
 
       <main className="main">
         <div className="main-scroll" ref={scrollRef}>
+          {updateInfo && updateInfo.has_update && !dismissedUpdate && (
+            <div className="update-alert-banner">
+              <div className="update-alert-left">
+                <span className="update-alert-badge">UPDATE</span>
+                <span>
+                  A new version of V-Studio (<strong>v{updateInfo.latest_version}</strong>) is available! You are currently using v{updateInfo.current_version}. Please update to the latest version.
+                </span>
+              </div>
+              <div className="update-alert-right">
+                <button
+                  type="button"
+                  className="update-alert-btn"
+                  onClick={() => openUrl(updateInfo.download_url)}
+                >
+                  <Icon name="sparkles" size={13} />
+                  Update now
+                </button>
+                <button
+                  type="button"
+                  className="update-alert-dismiss"
+                  onClick={() => setDismissedUpdate(true)}
+                  title="Dismiss alert"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
           {page.name === "projects" && (
             <Projects
               cards={filtered}

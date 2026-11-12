@@ -56,7 +56,13 @@ currently typed (you do not have to save first) and shows the result inline.
 
 VoxCPM 2 runs on your own PC, needs no cloud key, speaks **30 languages including
 Khmer**, and can either invent a voice from a description or clone one from a clip.
-Settings → **Voice** → engine **VoxCPM 2**.
+
+Settings → **Voice** → engine **Auto (recommended)** or **VoxCPM 2**. With **Auto**,
+the app probes the NVIDIA GPU once at startup and routes each project to VoxCPM 2
+when the card has at least **5.5 GB VRAM**; otherwise it falls back to Edge TTS.
+The Settings screen shows the detected GPU and the resolved route. If the local
+server is unreachable, the pipeline can fall back to Edge TTS
+(`voxcpm_auto_fallback`).
 
 The app calls the OpenAI-compatible `POST /v1/audio/speech` endpoint, so it works
 with two backends:
@@ -68,14 +74,17 @@ with two backends:
 
 ### Windows setup (bundled server)
 
-VoxCPM needs Python 3.11 or 3.12, an NVIDIA GPU (≈8 GB VRAM), and CUDA 12.
+VoxCPM needs Python 3.11 or 3.12, an NVIDIA GPU (≥5.5 GB VRAM for Auto routing),
+and CUDA 12.
 
-> **Hardware:** VoxCPM 2 is a 2B-parameter model (≈8 GB VRAM). On a 4 GB GPU the
-> model will not fit — start the server with `--device cpu` instead. CPU inference
-> needs roughly 16 GB of system RAM to be comfortable; with 8–12 GB the server
-> automatically switches to a low-memory loader (`--low-memory`) that streams the
-> weights instead of copying them, and generation is several times slower (a
-> sentence can take minutes). If neither fits, keep Azure/GPT-SoVITS or point
+> **Hardware:** VoxCPM 2 is a 2B-parameter model. Below 5.5 GB VRAM, **Auto** stays
+> on Edge TTS, but you can still install VoxCPM explicitly from Settings: the app
+> installs CPU PyTorch and starts the server with `--device cpu` in low-memory
+> mode. Generation is several times slower (a sentence can take minutes), so Edge
+> TTS remains the faster choice on small GPUs. CPU inference needs roughly 16 GB
+> of system RAM to be comfortable; with 8–12 GB the server automatically switches
+> to a low-memory loader (`--low-memory`) that streams the weights instead of
+> copying them. If neither fits, keep Edge TTS/Azure/GPT-SoVITS or point
 > **Server URL** at a cloud GPU running vLLM-Omni.
 
 ```powershell
@@ -138,6 +147,25 @@ Keep that window open. It listens on `http://127.0.0.1:8000`; check
   English. No fine-tuning is required.
 - Switching engines only affects newly generated audio. Use **Clear** on a scene's
   audio (or regenerate) to re-voice existing projects.
+
+### Sharing a build (one-click engine install)
+
+`tools/package_dist.ps1` creates a shareable folder. The recipient does **not**
+need a terminal or a manually started server:
+
+1. Build/share the package (`powershell -File tools\package_dist.ps1`; add
+   `-IncludeModel` to bundle the ~5 GB weights instead of downloading them).
+2. The recipient runs `videogen.exe`, opens **Settings → Voice**, and clicks
+   **Install Local Voice Engine**. The app installs Python if needed, creates a
+   private virtual environment in `%APPDATA%`, installs PyTorch + VoxCPM 2, and
+   starts the local server automatically.
+3. The server is started on every launch afterwards and stopped when the app
+   exits. If it cannot start and **Fall back to Edge TTS** is enabled, voice
+   generation continues with Edge TTS instead of failing.
+
+The server script is embedded in the executable, so a lone `videogen.exe` still
+works; the packaged `tools/` folder additionally provides the default reference
+voice.
 
 ## GPT-SoVITS voice (local)
 
