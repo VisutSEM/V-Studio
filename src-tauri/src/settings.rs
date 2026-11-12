@@ -300,7 +300,18 @@ pub async fn test_tts(
                 "Maly"
             }
         }
-        TtsKind::MetaMms | TtsKind::GptSovits | TtsKind::Auto | TtsKind::VoxCpm => "",
+        TtsKind::MetaMms => {
+            if is_english {
+                if !s.edge_voice_en.trim().is_empty() {
+                    s.edge_voice_en.as_str()
+                } else {
+                    "en-US-AvaNeural"
+                }
+            } else {
+                ""
+            }
+        }
+        TtsKind::GptSovits | TtsKind::Auto | TtsKind::VoxCpm => "",
     };
     let key = match s.tts_kind {
         TtsKind::Azure => Some(override_key(api_key, azure_key)?),

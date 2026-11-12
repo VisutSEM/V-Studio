@@ -38,6 +38,12 @@ def run_edge_tts(text: str, voice: str, out_path: str, slow: bool = False, speed
 _mms_model = None
 _mms_tokenizer = None
 
+def is_khmer_text(text: str) -> bool:
+    return any(0x1780 <= ord(c) <= 0x17FF for c in text)
+
+def is_latin_text(text: str) -> bool:
+    return any(c.isascii() and c.isalpha() for c in text)
+
 def get_mms():
     global _mms_model, _mms_tokenizer
     if _mms_model is None:
@@ -53,12 +59,33 @@ def get_mms():
     return _mms_model, _mms_tokenizer
 
 
-def run_meta_mms(text: str, out_path: str, slow: bool = False) -> None:
+def run_meta_mms(text: str, out_path: str, slow: bool = False, voice: str = "") -> None:
+    # If text is English or has no Khmer characters, fallback cleanly to Edge TTS
+    if not is_khmer_text(text) and is_latin_text(text):
+        eng_voice = voice if (voice and voice.startswith("en-")) else "en-US-AvaNeural"
+        try:
+            run_edge_tts(text, eng_voice, out_path, slow)
+            return
+        except Exception as e:
+            raise RuntimeError(
+                f"Meta MMS (Khmer model) cannot speak English text: '{text[:40]}'. Edge TTS fallback failed: {e}"
+            )
+
     import torch
     import soundfile as sf
 
     model, tokenizer = get_mms()
     inputs = tokenizer(text, return_tensors="pt")
+
+    # Guard against 0 tokens which causes PyTorch narrow() runtime error
+    if inputs.get("input_ids") is None or inputs["input_ids"].shape[1] == 0:
+        if is_latin_text(text):
+            run_edge_tts(text, "en-US-AvaNeural", out_path, slow)
+            return
+        raise ValueError(
+            f"Meta MMS: Text contains no recognized Khmer characters for synthesis: '{text}'"
+        )
+
     with torch.no_grad():
         output = model(**inputs).waveform
 
@@ -119,7 +146,7 @@ def main():
     if args.engine == "edge_tts":
         run_edge_tts(args.text, args.voice, args.out, args.slow, args.speed, args.pitch)
     elif args.engine == "meta_mms":
-        run_meta_mms(args.text, args.out, args.slow)
+        run_meta_mms(args.text, args.out, args.slow, args.voice)
     elif args.engine == "kiri_tts":
         run_kiri_tts(args.text, args.voice, args.out, args.api_key, args.base_url, args.slow)
     else:

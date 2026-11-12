@@ -322,7 +322,23 @@ pub async fn tts(
             };
             edge_tts(v, text, slow, s.edge_speed, s.edge_pitch).await
         }
-        TtsKind::MetaMms => meta_mms(text, slow).await,
+        TtsKind::MetaMms => {
+            let is_english = lang == "en"
+                || (!text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c))
+                    && text.chars().any(|c| c.is_ascii_alphabetic()));
+            if is_english {
+                let v = if !voice.trim().is_empty() {
+                    voice
+                } else if !s.edge_voice_en.trim().is_empty() {
+                    &s.edge_voice_en
+                } else {
+                    "en-US-AvaNeural"
+                };
+                edge_tts(v, text, slow, s.edge_speed, s.edge_pitch).await
+            } else {
+                meta_mms(text, slow).await
+            }
+        }
         TtsKind::GptSovits => gpt_sovits(s, text, lang, slow).await,
     }
 }
