@@ -76,6 +76,8 @@ pub fn run() {
             commands::delete_scene,
             commands::save_scene_recording,
             commands::check_for_updates,
+            commands::download_update_installer,
+            commands::run_installer_and_exit,
             pipeline::generate_script,
             pipeline::generate_voice,
             pipeline::generate_images,

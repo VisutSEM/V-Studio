@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, GpuInfo, Settings as S, SettingsView, TtsRoute } from "./api";
+import { api, GpuInfo, onUpdateDownloadProgress, Settings as S, SettingsView, TtsRoute, UpdateCheckResult } from "./api";
 import { Icon } from "./components/icons";
 import { applyTheme } from "./theme";
 
@@ -74,11 +74,22 @@ export default function SettingsPage() {
   const [updateStatus, setUpdateStatus] = useState<"latest" | "available" | null>(null);
   const [latestVersion, setLatestVersion] = useState("0.2.3");
   const [downloadUrl, setDownloadUrl] = useState("https://github.com/VisutSEM/V-Studio/releases");
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{
+    percent: number;
+    downloadedMb: number;
+    totalMb: number;
+  } | null>(null);
+  const [downloadReadyPath, setDownloadReadyPath] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
+    setDownloadError(null);
     try {
       const res = await api.checkForUpdates();
+      setUpdateResult(res);
       setLatestVersion(res.latest_version);
       setUpdateStatus(res.has_update ? "available" : "latest");
       if (res.download_url) setDownloadUrl(res.download_url);
@@ -86,6 +97,44 @@ export default function SettingsPage() {
       setUpdateStatus("latest");
     } finally {
       setCheckingUpdate(false);
+    }
+  };
+
+  const handleStartInAppUpdate = async () => {
+    if (!updateResult) return;
+    const targetUrl = updateResult.installer_url || updateResult.download_url;
+    setDownloadingUpdate(true);
+    setDownloadError(null);
+    const estMb = updateResult.installer_size ? Math.round(updateResult.installer_size / 1024 / 1024) : 98;
+    setDownloadProgress({ percent: 0, downloadedMb: 0, totalMb: estMb });
+
+    try {
+      const unlisten = await onUpdateDownloadProgress((p) => {
+        const dMb = Math.round((p.downloaded_bytes / (1024 * 1024)) * 10) / 10;
+        const tMb = Math.round((p.total_bytes / (1024 * 1024)) * 10) / 10;
+        setDownloadProgress({ percent: p.percent, downloadedMb: dMb, totalMb: tMb });
+        if (p.error) {
+          setDownloadError(p.error);
+          setDownloadingUpdate(false);
+        }
+      });
+
+      const installerPath = await api.downloadUpdateInstaller(targetUrl, updateResult.latest_version);
+      unlisten();
+      setDownloadingUpdate(false);
+      setDownloadReadyPath(installerPath);
+    } catch (err: any) {
+      setDownloadingUpdate(false);
+      setDownloadError(err?.message || String(err));
+    }
+  };
+
+  const handleRestartAndInstall = async () => {
+    if (!downloadReadyPath) return;
+    try {
+      await api.runInstallerAndExit(downloadReadyPath);
+    } catch (err: any) {
+      setDownloadError(err?.message || String(err));
     }
   };
 
@@ -1158,27 +1207,104 @@ export default function SettingsPage() {
                   {updateStatus === "available" && (
                     <div
                       style={{
-                        display: "inline-flex",
-                        alignItems: "center",
+                        display: "flex",
+                        flexDirection: "column",
                         gap: 10,
-                        padding: "6px 14px",
+                        padding: "10px 14px",
                         borderRadius: 8,
                         background: "rgba(249, 115, 22, 0.15)",
                         border: "1px solid rgba(249, 115, 22, 0.4)",
                         color: "#fb923c",
                         fontSize: 13,
                         fontWeight: 500,
+                        width: "100%",
                       }}
                     >
-                      <span>Update available: <strong>v{latestVersion}</strong>! Please update to the latest version.</span>
-                      <button
-                        type="button"
-                        className="settings-btn-dark primary"
-                        style={{ padding: "3px 10px", fontSize: 12 }}
-                        onClick={() => openUrl(downloadUrl)}
-                      >
-                        Download
-                      </button>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                        <span>Update available: <strong>v{latestVersion}</strong>! Please update to the latest version.</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {downloadReadyPath ? (
+                            <button
+                              type="button"
+                              className="settings-btn-dark primary"
+                              style={{ padding: "5px 12px", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6 }}
+                              onClick={handleRestartAndInstall}
+                            >
+                              <Icon name="sparkles" size={13} />
+                              Restart &amp; Install
+                            </button>
+                          ) : downloadingUpdate ? (
+                            <button
+                              type="button"
+                              className="settings-btn-dark"
+                              disabled
+                              style={{ padding: "5px 12px", fontSize: 12, opacity: 0.85, cursor: "wait", display: "inline-flex", alignItems: "center", gap: 6 }}
+                            >
+                              <Icon name="refresh" size={12} className="spin" />
+                              Downloading…
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="settings-btn-dark primary"
+                                style={{ padding: "5px 12px", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6 }}
+                                onClick={handleStartInAppUpdate}
+                              >
+                                <Icon name="sparkles" size={13} />
+                                Update now (In-App)
+                              </button>
+                              <button
+                                type="button"
+                                className="settings-btn-dark"
+                                style={{ padding: "5px 10px", fontSize: 12 }}
+                                onClick={() => openUrl(downloadUrl)}
+                              >
+                                Browser
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {downloadingUpdate && downloadProgress && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          <div
+                            style={{
+                              width: "100%",
+                              height: 6,
+                              background: "rgba(255, 255, 255, 0.15)",
+                              borderRadius: 4,
+                              overflow: "hidden",
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${Math.max(4, downloadProgress.percent)}%`,
+                                height: "100%",
+                                background: "linear-gradient(90deg, #f97316, #fb923c)",
+                                borderRadius: 4,
+                                transition: "width 0.2s ease",
+                              }}
+                            />
+                          </div>
+                          <span style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.75)" }}>
+                            Downloading v{latestVersion}… {downloadProgress.percent}% ({downloadProgress.downloadedMb} / {downloadProgress.totalMb} MB)
+                          </span>
+                        </div>
+                      )}
+
+                      {downloadReadyPath && (
+                        <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>
+                          ✓ Installer downloaded to disk. Click "Restart &amp; Install" to finish update.
+                        </span>
+                      )}
+
+                      {downloadError && (
+                        <span style={{ fontSize: 12, color: "#f87171" }}>
+                          ⚠️ In-app download failed: {downloadError}. You can click "Browser" to download manually.
+                        </span>
+                      )}
                     </div>
                   )}
 

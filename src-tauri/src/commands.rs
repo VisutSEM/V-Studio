@@ -374,6 +374,17 @@ pub struct UpdateCheckResult {
     pub latest_version: String,
     pub has_update: bool,
     pub download_url: String,
+    pub installer_url: Option<String>,
+    pub installer_size: Option<u64>,
+}
+
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DownloadProgress {
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: u32,
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 fn parse_version_parts(v: &str) -> Vec<u64> {
@@ -410,6 +421,8 @@ pub async fn check_for_updates() -> CmdResult<UpdateCheckResult> {
 
     let mut latest_version = current_version.clone();
     let mut download_url = "https://github.com/VisutSEM/V-Studio/releases".to_string();
+    let mut installer_url = None;
+    let mut installer_size = None;
 
     // 1. Try checking latest GitHub release
     if let Ok(res) = client
@@ -427,6 +440,16 @@ pub async fn check_for_updates() -> CmdResult<UpdateCheckResult> {
                 }
                 if let Some(url) = json["html_url"].as_str() {
                     download_url = url.to_string();
+                }
+                if let Some(assets) = json["assets"].as_array() {
+                    for asset in assets {
+                        let name = asset["name"].as_str().unwrap_or_default();
+                        if name.ends_with(".exe") && (name.contains("setup") || name.contains("V-Studio")) {
+                            installer_url = asset["browser_download_url"].as_str().map(str::to_string);
+                            installer_size = asset["size"].as_u64();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -454,12 +477,132 @@ pub async fn check_for_updates() -> CmdResult<UpdateCheckResult> {
 
     let has_update = is_version_newer(&latest_version, &current_version);
 
+    if installer_url.is_none() && has_update {
+        installer_url = Some(format!(
+            "https://github.com/VisutSEM/V-Studio/releases/download/v{latest_version}/V-Studio_{latest_version}_x64-setup.exe"
+        ));
+    }
+
     Ok(UpdateCheckResult {
         current_version,
         latest_version,
         has_update,
         download_url,
+        installer_url,
+        installer_size,
     })
+}
+
+#[tauri::command]
+pub async fn download_update_installer(
+    app: tauri::AppHandle,
+    url: String,
+    version: String,
+) -> CmdResult<String> {
+    use futures::StreamExt;
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+
+    let client = reqwest::Client::builder()
+        .user_agent("V-Studio")
+        .build()
+        .map_err(|e| err(&e.to_string()))?;
+
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| err(&format!("Failed to connect to download URL: {e}")))?;
+
+    if !res.status().is_success() {
+        return Err(err(&format!("Download failed with HTTP status {}", res.status())));
+    }
+
+    let total_bytes = res.content_length().unwrap_or(102_824_347);
+    let temp_dir = std::env::temp_dir();
+    let installer_path = temp_dir.join(format!("V-Studio_{version}_installer.exe"));
+
+    let mut file = tokio::fs::File::create(&installer_path)
+        .await
+        .map_err(|e| err(&format!("Failed to create destination installer file: {e}")))?;
+
+    let mut stream = res.bytes_stream();
+    let mut downloaded_bytes: u64 = 0;
+    let mut last_percent: u32 = 0;
+
+    let _ = app.emit(
+        "update-download-progress",
+        DownloadProgress {
+            downloaded_bytes: 0,
+            total_bytes,
+            percent: 0,
+            done: false,
+            error: None,
+        },
+    );
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| err(&format!("Error downloading chunk: {e}")))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| err(&format!("Error writing installer file: {e}")))?;
+        downloaded_bytes += chunk.len() as u64;
+
+        let percent = if total_bytes > 0 {
+            ((downloaded_bytes as f64 / total_bytes as f64) * 100.0) as u32
+        } else {
+            0
+        }
+        .min(100);
+
+        if percent != last_percent {
+            last_percent = percent;
+            let _ = app.emit(
+                "update-download-progress",
+                DownloadProgress {
+                    downloaded_bytes,
+                    total_bytes,
+                    percent,
+                    done: false,
+                    error: None,
+                },
+            );
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| err(&format!("Failed to flush installer file: {e}")))?;
+
+    let _ = app.emit(
+        "update-download-progress",
+        DownloadProgress {
+            downloaded_bytes: total_bytes,
+            total_bytes,
+            percent: 100,
+            done: true,
+            error: None,
+        },
+    );
+
+    Ok(installer_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn run_installer_and_exit(app: tauri::AppHandle, installer_path: String) -> CmdResult<()> {
+    let path = std::path::PathBuf::from(&installer_path);
+    if !path.exists() {
+        return Err(err("Installer file not found on disk."));
+    }
+
+    let mut cmd = std::process::Command::new(&path);
+    #[cfg(windows)]
+    {
+        cmd.spawn().map_err(|e| err(&format!("Failed to start installer: {e}")))?;
+    }
+
+    app.exit(0);
+    Ok(())
 }
 
 

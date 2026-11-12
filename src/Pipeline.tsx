@@ -437,15 +437,67 @@ export default function Pipeline({
                 <Icon name="pencil" size={14} />
                 <span>Edit script</span>
               </button>
-              <button
-                type="button"
-                className="nitean-tool-btn"
-                disabled={!!busy}
-                onClick={() => run("voice", () => api.voice(id))}
-              >
-                <Icon name="volume" size={14} />
-                <span>Generate voices</span>
-              </button>
+              {voiceDone ? (
+                <button
+                  type="button"
+                  className="nitean-tool-btn"
+                  disabled={!!busy}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `All ${sc.length} scenes already have voices.\n\nDo you want to regenerate all voices using your current voice settings?`,
+                      )
+                    ) {
+                      run("voice", () => api.voice(id, true));
+                    }
+                  }}
+                  title="Regenerate all scene voices with current settings"
+                >
+                  <Icon name="refresh" size={14} className={busy === "voice" ? "spin" : ""} />
+                  <span>Regenerate voices</span>
+                </button>
+              ) : withAudio > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    className="nitean-tool-btn"
+                    disabled={!!busy}
+                    onClick={() => run("voice", () => api.voice(id, false))}
+                    title={`Generate remaining ${sc.length - withAudio} voices`}
+                  >
+                    <Icon name="volume" size={14} />
+                    <span>Generate voices ({sc.length - withAudio} left)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="nitean-tool-btn"
+                    disabled={!!busy}
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `Regenerate all ${sc.length} scene voices from scratch with current voice settings?`,
+                        )
+                      ) {
+                        run("voice", () => api.voice(id, true));
+                      }
+                    }}
+                    title="Regenerate all scene voices from scratch"
+                  >
+                    <Icon name="refresh" size={14} className={busy === "voice" ? "spin" : ""} />
+                    <span>Regenerate all</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="nitean-tool-btn"
+                  disabled={!!busy}
+                  onClick={() => run("voice", () => api.voice(id, false))}
+                >
+                  <Icon name="volume" size={14} />
+                  <span>Generate voices</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="nitean-tool-btn"
@@ -642,6 +694,21 @@ export default function Pipeline({
                           style={{ fontSize: 11 }}
                         />
                         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                          {s.audio_path && (
+                            <button
+                              type="button"
+                              className="btn sm"
+                              disabled={savingScene || !!busy || isVoiceOp}
+                              onClick={async () => {
+                                await saveSceneEdit(s);
+                                runSingleVoice(s.id);
+                              }}
+                              title="Save narration changes and regenerate voice immediately"
+                            >
+                              <Icon name="volume" size={12} />
+                              Save &amp; Re-voice
+                            </button>
+                          )}
                           <button className="btn sm primary" disabled={savingScene} onClick={() => saveSceneEdit(s)}>
                             {savingScene ? "Saving…" : "Save"}
                           </button>
@@ -657,49 +724,58 @@ export default function Pipeline({
                     )}
 
                     <div className="nitean-card-actions">
-                      {s.audio_path ? (
+                      {/* Play preview if audio exists */}
+                      {s.audio_path && (
                         <button
                           type="button"
                           className="nitean-act-btn"
                           onClick={() => toggleAudio(s)}
-                          title={isPlayingThis ? "Pause audio" : "Play audio preview"}
+                          title={isPlayingThis ? "Pause audio preview" : "Play audio preview"}
                         >
                           <Icon name={isPlayingThis ? "pause" : "play"} size={13} />
                         </button>
-                      ) : (
+                      )}
+
+                      {/* Voice generation & regeneration button */}
+                      <button
+                        type="button"
+                        className={`nitean-act-btn ${s.audio_path ? "voiced" : ""}`}
+                        disabled={!!busy || isVoiceOp}
+                        onClick={() => runSingleVoice(s.id)}
+                        title={s.audio_path ? "Regenerate voice for this scene" : "Generate voice for this scene"}
+                      >
+                        <Icon
+                          name={isVoiceOp ? "refresh" : s.audio_path ? "refresh" : "volume"}
+                          size={13}
+                          className={isVoiceOp ? "spin" : ""}
+                        />
+                      </button>
+
+                      {/* Image generation & regeneration button */}
+                      <button
+                        type="button"
+                        className={`nitean-act-btn ${s.image_path ? "drawn" : ""}`}
+                        disabled={!!busy || isImageOp}
+                        onClick={() => runSingleImage(s.id)}
+                        title={s.image_path ? "Regenerate image for this scene" : "Generate image for this scene"}
+                      >
+                        <Icon
+                          name={isImageOp ? "refresh" : "image"}
+                          size={13}
+                          className={isImageOp ? "spin" : ""}
+                        />
+                      </button>
+
+                      {s.image_path && (
                         <button
                           type="button"
                           className="nitean-act-btn"
-                          disabled={!!busy || isVoiceOp}
-                          onClick={() => runSingleVoice(s.id)}
-                          title="Generate voice for this scene"
+                          onClick={() => setPreviewImgUrl(fileUrl(d.dir, s.image_path!))}
+                          title="View full image"
                         >
-                          <Icon name="volume" size={13} />
+                          <Icon name="external-link" size={13} />
                         </button>
                       )}
-
-                      <button
-                        type="button"
-                        className="nitean-act-btn"
-                        disabled={!!busy || isVoiceOp || isImageOp}
-                        onClick={() => {
-                          if (s.image_path) runSingleImage(s.id);
-                          else runSingleVoice(s.id);
-                        }}
-                        title="Regenerate scene"
-                      >
-                        <Icon name="refresh" size={13} />
-                      </button>
-
-                      <button
-                        type="button"
-                        className="nitean-act-btn"
-                        disabled={!s.image_path}
-                        onClick={() => s.image_path && setPreviewImgUrl(fileUrl(d.dir, s.image_path!))}
-                        title="View full image"
-                      >
-                        <Icon name="external-link" size={13} />
-                      </button>
 
                       <button
                         type="button"
@@ -1193,6 +1269,23 @@ export default function Pipeline({
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             {!isEditingThis ? (
                               <>
+                                {s.audio_path && (
+                                  <button
+                                    type="button"
+                                    className="btn sm ghost"
+                                    style={{ padding: "3px 8px", fontSize: 12, height: 26, display: "inline-flex", alignItems: "center", gap: 5 }}
+                                    disabled={!!busy || (sceneOp?.id === s.id && sceneOp.kind === "voice")}
+                                    onClick={() => runSingleVoice(s.id)}
+                                    title="Regenerate voice for this scene"
+                                  >
+                                    <Icon
+                                      name={sceneOp?.id === s.id && sceneOp.kind === "voice" ? "refresh" : "volume"}
+                                      size={12}
+                                      className={sceneOp?.id === s.id && sceneOp.kind === "voice" ? "spin" : ""}
+                                    />
+                                    Re-voice
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   className="btn sm ghost"
@@ -1223,6 +1316,21 @@ export default function Pipeline({
                                 >
                                   Cancel
                                 </button>
+                                {s.audio_path && (
+                                  <button
+                                    type="button"
+                                    className="btn sm"
+                                    style={{ padding: "3px 10px", fontSize: 12, height: 26 }}
+                                    disabled={modalSavingScene || !!busy}
+                                    onClick={async () => {
+                                      await handleSaveModalScene(s.id);
+                                      runSingleVoice(s.id);
+                                    }}
+                                    title="Save narration changes and regenerate voice immediately"
+                                  >
+                                    Save &amp; Re-voice
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   className="btn sm primary"

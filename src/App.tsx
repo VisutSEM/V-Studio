@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ProjectCard, SettingsView, UpdateCheckResult } from "./api";
+import { api, onUpdateDownloadProgress, ProjectCard, SettingsView, UpdateCheckResult } from "./api";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "./components/icons";
 import Wizard from "./Wizard";
@@ -29,8 +29,54 @@ export default function App() {
   );
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [dismissedUpdate, setDismissedUpdate] = useState(false);
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{
+    percent: number;
+    downloadedMb: number;
+    totalMb: number;
+  } | null>(null);
+  const [downloadReadyPath, setDownloadReadyPath] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const startInAppUpdate = async () => {
+    if (!updateInfo) return;
+    const targetUrl = updateInfo.installer_url || updateInfo.download_url;
+    setDownloadingUpdate(true);
+    setDownloadError(null);
+    const estMb = updateInfo.installer_size ? Math.round(updateInfo.installer_size / 1024 / 1024) : 98;
+    setDownloadProgress({ percent: 0, downloadedMb: 0, totalMb: estMb });
+
+    try {
+      const unlisten = await onUpdateDownloadProgress((p) => {
+        const dMb = Math.round((p.downloaded_bytes / (1024 * 1024)) * 10) / 10;
+        const tMb = Math.round((p.total_bytes / (1024 * 1024)) * 10) / 10;
+        setDownloadProgress({ percent: p.percent, downloadedMb: dMb, totalMb: tMb });
+        if (p.error) {
+          setDownloadError(p.error);
+          setDownloadingUpdate(false);
+        }
+      });
+
+      const installerPath = await api.downloadUpdateInstaller(targetUrl, updateInfo.latest_version);
+      unlisten();
+      setDownloadingUpdate(false);
+      setDownloadReadyPath(installerPath);
+    } catch (err: any) {
+      setDownloadingUpdate(false);
+      setDownloadError(err?.message || String(err));
+    }
+  };
+
+  const restartAndApplyUpdate = async () => {
+    if (!downloadReadyPath) return;
+    try {
+      await api.runInstallerAndExit(downloadReadyPath);
+    } catch (err: any) {
+      setDownloadError(err?.message || String(err));
+    }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -219,19 +265,77 @@ export default function App() {
             <div className="update-alert-banner">
               <div className="update-alert-left">
                 <span className="update-alert-badge">UPDATE</span>
-                <span>
-                  A new version of V-Studio (<strong>v{updateInfo.latest_version}</strong>) is available! You are currently using v{updateInfo.current_version}. Please update to the latest version.
-                </span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>
+                      A new version of V-Studio (<strong>v{updateInfo.latest_version}</strong>) is available! You are currently using v{updateInfo.current_version}.
+                    </span>
+                    {downloadReadyPath && (
+                      <span className="update-badge-ready">✓ Ready to install</span>
+                    )}
+                  </div>
+                  {downloadingUpdate && downloadProgress && (
+                    <div className="update-progress-container">
+                      <div className="update-progress-track">
+                        <div
+                          className="update-progress-fill"
+                          style={{ width: `${Math.max(4, downloadProgress.percent)}%` }}
+                        />
+                      </div>
+                      <span className="update-progress-text">
+                        Downloading v{updateInfo.latest_version}… {downloadProgress.percent}% ({downloadProgress.downloadedMb} / {downloadProgress.totalMb} MB)
+                      </span>
+                    </div>
+                  )}
+                  {downloadError && (
+                    <div className="update-error-text">
+                      ⚠️ In-app download failed: {downloadError}. You can open download page in browser.
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="update-alert-right">
-                <button
-                  type="button"
-                  className="update-alert-btn"
-                  onClick={() => openUrl(updateInfo.download_url)}
-                >
-                  <Icon name="sparkles" size={13} />
-                  Update now
-                </button>
+                {downloadReadyPath ? (
+                  <button
+                    type="button"
+                    className="update-alert-btn ready"
+                    onClick={restartAndApplyUpdate}
+                    title="Launch installer and update now"
+                  >
+                    <Icon name="sparkles" size={13} />
+                    Restart &amp; Install
+                  </button>
+                ) : downloadingUpdate ? (
+                  <button
+                    type="button"
+                    className="update-alert-btn"
+                    disabled
+                    style={{ opacity: 0.85, cursor: "wait" }}
+                  >
+                    <Icon name="refresh" size={13} className="spin" />
+                    Downloading…
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="update-alert-btn"
+                      onClick={startInAppUpdate}
+                      title="Download and update directly inside V-Studio"
+                    >
+                      <Icon name="sparkles" size={13} />
+                      Update now
+                    </button>
+                    <button
+                      type="button"
+                      className="update-alert-btn-ghost"
+                      onClick={() => openUrl(updateInfo.download_url)}
+                      title="Open GitHub release in web browser"
+                    >
+                      Browser
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   className="update-alert-dismiss"

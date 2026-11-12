@@ -105,6 +105,16 @@ export interface UpdateCheckResult {
   latest_version: string;
   has_update: boolean;
   download_url: string;
+  installer_url?: string | null;
+  installer_size?: number | null;
+}
+
+export interface UpdateDownloadProgress {
+  downloaded_bytes: number;
+  total_bytes: number;
+  percent: number;
+  done: boolean;
+  error?: string | null;
 }
 
 export const api = {
@@ -118,7 +128,8 @@ export const api = {
   estimate: (durationSec: number) => invoke<{ scene_len: number; scenes: number }>("estimate", { durationSec }),
   clearAsset: (sceneId: number, kind: "image" | "audio") => invoke<void>("clear_asset", { sceneId, kind }),
   script: (id: string) => invoke<number>("generate_script", { id }),
-  voice: (id: string) => invoke<number>("generate_voice", { id }),
+  voice: (id: string, force?: boolean) =>
+    invoke<number>("generate_voice", { id, force: force ?? false }),
   images: (id: string) => invoke<number>("generate_images", { id }),
   buildSubs: (id: string) => invoke<Cue[]>("build_subtitles", { id }),
   getSubs: (id: string) => invoke<Cue[]>("get_subtitles", { id }),
@@ -156,9 +167,15 @@ export const api = {
     keys: { llmApiKey?: string | null; cfApiToken?: string | null; azureTtsKey?: string | null; kiriTtsKey?: string | null },
   ) => invoke<void>("save_settings", { settings, ...keys }),
   checkForUpdates: () => invoke<UpdateCheckResult>("check_for_updates"),
+  downloadUpdateInstaller: (url: string, version: string) =>
+    invoke<string>("download_update_installer", { url, version }),
+  runInstallerAndExit: (installerPath: string) =>
+    invoke<void>("run_installer_and_exit", { installerPath }),
 };
 
 export const onProgress = (cb: (p: Progress) => void) => listen<Progress>("pipeline-progress", (e) => cb(e.payload));
+export const onUpdateDownloadProgress = (cb: (p: UpdateDownloadProgress) => void) =>
+  listen<UpdateDownloadProgress>("update-download-progress", (e) => cb(e.payload));
 export const onVoxcpmSetupProgress = (cb: (p: SetupProgress) => void) =>
   listen<SetupProgress>("voxcpm-setup-progress", (e) => cb(e.payload));
 export const onVoxcpmStatus = (cb: (s: string) => void) =>

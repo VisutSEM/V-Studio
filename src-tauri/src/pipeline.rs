@@ -281,8 +281,9 @@ pub async fn generate_voice(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
+    force: Option<bool>,
 ) -> CmdResult<u32> {
-    Ok(voice(&app, &state, &id).await?)
+    Ok(voice(&app, &state, &id, force.unwrap_or(false)).await?)
 }
 
 /// Save one synthesized scene, post-process it to 48 kHz WAV, and return the
@@ -322,7 +323,7 @@ async fn save_scene_audio(dir: &Path, idx: i64, bytes: &[u8]) -> Result<(String,
     Ok((final_rel, ms))
 }
 
-async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
+async fn voice(app: &AppHandle, st: &AppState, id: &str, force: bool) -> Result<u32> {
     let p = db::project(&st.pool, id).await?;
     let scenes = db::scenes(&st.pool, id).await?;
     if scenes.is_empty() {
@@ -359,10 +360,17 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
     tokio::fs::create_dir_all(dir.join("audio")).await?;
 
     let slow = p.style == "2d_horror";
-    let todo: Vec<Scene> = scenes
-        .into_iter()
-        .filter(|s| s.audio_path.is_none())
-        .collect();
+    let todo: Vec<Scene> = if force {
+        scenes
+    } else {
+        scenes
+            .into_iter()
+            .filter(|s| s.audio_path.is_none())
+            .collect()
+    };
+    if todo.is_empty() {
+        return Ok(0);
+    }
     let (pool, s2, key, voice, lang) = (
         st.pool.clone(),
         s.clone(),
