@@ -2,8 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, GpuInfo, onUpdateDownloadProgress, Settings as S, SettingsView, TtsRoute, UpdateCheckResult } from "./api";
+import { api, GpuInfo, onUpdateDownloadProgress, onVoxcpmSetupProgress, Settings as S, SettingsView, SetupProgress, TtsRoute, UpdateCheckResult, VoxcpmSetupStatus } from "./api";
 import { Icon } from "./components/icons";
+import { VoiceRecorderModal } from "./components/VoiceRecorderModal";
 import { applyTheme } from "./theme";
 
 type Kind = S["llm_kind"];
@@ -83,6 +84,63 @@ export default function SettingsPage() {
   } | null>(null);
   const [downloadReadyPath, setDownloadReadyPath] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const [voxStatus, setVoxStatus] = useState<string>("checking");
+  const [serverCheck, setServerCheck] = useState<{
+    loading: boolean;
+    result: { ok: boolean; status: string; message: string } | null;
+  }>({ loading: false, result: null });
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<VoxcpmSetupStatus | null>(null);
+  const [setupProgress, setSetupProgress] = useState<SetupProgress | null>(null);
+  const [isInstalling, setIsInstalling] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getVoxcpmSetupStatus()
+      .then((st) => {
+        if (active) setSetupStatus(st);
+      })
+      .catch(() => {});
+
+    const unlisten = onVoxcpmSetupProgress((p) => {
+      if (!active) return;
+      setSetupProgress(p);
+      if (p.is_done) {
+        setIsInstalling(false);
+        api.getVoxcpmSetupStatus().then(setSetupStatus).catch(() => {});
+        setVoxStatus("ready");
+      }
+      if (p.error) {
+        setIsInstalling(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      unlisten.then((fn) => fn()).catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const check = () => {
+      invoke<string>("get_voxcpm_status")
+        .then((st) => {
+          if (active) setVoxStatus(st);
+        })
+        .catch(() => {
+          if (active) setVoxStatus("stopped");
+        });
+    };
+    check();
+    const interval = setInterval(check, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
@@ -227,6 +285,81 @@ export default function SettingsPage() {
       () => `Playing ${lang === "km" ? "Khmer" : "English"} sample (Crystal-Clear Voice)`,
       { text },
     );
+  };
+
+  const pickAudio = async (apply: (path: string) => void) => {
+    try {
+      const file = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "aac"] }],
+      });
+      if (typeof file === "string" && file) apply(file);
+    } catch (e) {
+      setMsg({ text: String(e), kind: "error" });
+    }
+  };
+
+  const gpuName = setupStatus?.gpu_name || gpu?.name || "NVIDIA GeForce GPU";
+  const vramMb = setupStatus?.vram_mb ?? gpu?.vram_mb ?? 0;
+  const vramGb = vramMb > 0 ? (vramMb / 1024).toFixed(1) : "0.0";
+  const systemRamMb = setupStatus?.system_ram_mb ?? 0;
+  const systemRamGb = systemRamMb > 0 ? (systemRamMb / 1024).toFixed(1) : "0.0";
+  const hasEnoughVram = vramMb >= 5400;
+  const hasEnoughCpuRam = systemRamMb >= 15000;
+  const canInstall = setupStatus ? setupStatus.can_install : (hasEnoughVram || hasEnoughCpuRam);
+
+  const handleInstallEngine = async () => {
+    if (!canInstall) return;
+    setIsInstalling(true);
+    setSetupProgress({
+      step: "Starting setup...",
+      percent: 5,
+      log: "Initializing setup...",
+      is_done: false,
+      error: null,
+    });
+    try {
+      await api.setupVoxcpmEngine();
+      const updated = await api.getVoxcpmSetupStatus();
+      setSetupStatus(updated);
+      setVoxStatus("ready");
+    } catch (e) {
+      setSetupProgress({
+        step: "Installation failed",
+        percent: 0,
+        log: String(e),
+        is_done: false,
+        error: String(e),
+      });
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
+  const testVoxcpmServer = async () => {
+    if (!s) return;
+    setServerCheck({ loading: true, result: null });
+    try {
+      const res = await invoke<{ ok: boolean; status: string; message: string }>(
+        "check_voxcpm_health",
+        { url: s.voxcpm_url || "http://127.0.0.1:8000" },
+      );
+      setServerCheck({ loading: false, result: res });
+      if (res.ok) setVoxStatus("ready");
+      else if (res.status === "loading") setVoxStatus("starting");
+      else setVoxStatus("stopped");
+    } catch (e) {
+      setServerCheck({
+        loading: false,
+        result: {
+          ok: false,
+          status: "unreachable",
+          message: String(e),
+        },
+      });
+      setVoxStatus("stopped");
+    }
   };
 
   return (
@@ -552,25 +685,369 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 <div className="settings-card-right">
-                  <div className="gpu-badge-line">
-                    <Icon name="cpu" size={16} />
-                    <span>{gpu?.name || "NVIDIA GeForce RTX 3050 Laptop GPU"}</span>
-                    <span className="vram-pill">
-                      {((gpu?.vram_mb || 4096) / 1024).toFixed(1)} GB video memory
-                    </span>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                    <div className="gpu-badge-dark">
+                      <Icon name="cpu" size={16} />
+                      <span>{gpuName}</span>
+                      <span className="vram-pill">{vramGb} GB video memory</span>
+                    </div>
+                    {systemRamMb > 0 && (
+                      <div className="gpu-badge-dark">
+                        <Icon name="sparkles" size={15} />
+                        <span>System Memory</span>
+                        <span className="vram-pill">{systemRamGb} GB RAM</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="settings-info-box-dark">
                     <Icon name="info" size={16} className="info-icon" />
                     <span>
-                      {gpu && gpu.has_nvidia && gpu.vram_mb >= 5529
-                        ? `Local voices run with CUDA GPU acceleration on your ${gpu.name || "graphics card"} (${(gpu.vram_mb / 1024).toFixed(1)} GB VRAM).`
-                        : "Local voices need a graphics card with at least 5.4 GB of memory. Use Edge TTS or Gemini TTS instead."}
+                      {hasEnoughVram
+                        ? `Local voices run best on a graphics card with at least 5.4 GB VRAM. Detected ${vramGb} GB VRAM — ready for high-speed CUDA acceleration!`
+                        : hasEnoughCpuRam
+                          ? `GPU has under 5.4 GB VRAM, but your PC has ${systemRamGb} GB system RAM. Can run on CPU (safe, ~20-30s per scene).`
+                          : `Local voices require a graphics card with at least 5.4 GB VRAM or at least 16 GB system RAM. Your hardware is below minimum specs.`}
                     </span>
                   </div>
 
-                  <div className="voice-footer-meta">
-                    Engine: audio.cpp v0.9.0 (Vulkan) (Apache-2.0) · Model: VoxCPM2 (Apache-2.0)
+                  {/* Installer & Engine Status Banner */}
+                  {isInstalling ? (
+                    <div
+                      style={{
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--accent-primary, #6366f1)",
+                        borderRadius: 8,
+                        padding: "14px 16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                          {setupProgress?.step || "Installing VoxCPM 2 Engine..."}
+                        </span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-primary, #6366f1)" }}>
+                          {setupProgress?.percent ?? 0}%
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          width: "100%",
+                          height: 6,
+                          background: "var(--border-subtle)",
+                          borderRadius: 999,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${setupProgress?.percent ?? 5}%`,
+                            background: "var(--accent-primary, #6366f1)",
+                            transition: "width 0.3s ease",
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                        {setupProgress?.log}
+                      </div>
+                    </div>
+                  ) : setupProgress?.error ? (
+                    <div
+                      style={{
+                        background: "rgba(239, 68, 68, 0.1)",
+                        border: "1px solid #ef4444",
+                        borderRadius: 8,
+                        padding: "12px 14px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#f87171" }}>Setup Failed</div>
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{setupProgress.error}</div>
+                      {canInstall && (
+                        <button
+                          type="button"
+                          className="settings-btn-dark"
+                          style={{ alignSelf: "flex-start", marginTop: 4 }}
+                          onClick={handleInstallEngine}
+                        >
+                          Retry Installation
+                        </button>
+                      )}
+                    </div>
+                  ) : setupStatus && !setupStatus.is_ready ? (
+                    !canInstall ? (
+                      /* LOW RAM / GPU DETECTED: STRICTLY BLOCK INSTALLATION */
+                      <div
+                        style={{
+                          background: "rgba(239, 68, 68, 0.12)",
+                          border: "1px solid #ef4444",
+                          borderRadius: 10,
+                          padding: "14px 16px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ color: "#ef4444", display: "inline-flex" }}>
+                            <Icon name="x" size={16} />
+                          </span>
+                          <span style={{ fontSize: 13.5, fontWeight: 700, color: "#f87171" }}>
+                            Low Memory Detected — VoxCPM 2 Cannot Be Installed
+                          </span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 12.5, color: "#e5e7eb", lineHeight: 1.55 }}>
+                          VoxCPM 2 requires an <b>NVIDIA GPU with at least 5.4 GB VRAM</b> or a PC with at least <b>16 GB System RAM</b>.
+                          <br />
+                          Detected on this computer: <b>{gpuName} ({vramGb} GB VRAM)</b> · <b>{systemRamGb} GB System RAM</b>.
+                        </p>
+                        <div
+                          style={{
+                            background: "#16181f",
+                            border: "1px solid #2e313d",
+                            borderRadius: 8,
+                            padding: "10px 12px",
+                            fontSize: 12.5,
+                            color: "#93c5fd",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          🛡️ <b>Installation is blocked to protect this computer from freezing or running out of memory.</b>
+                          <br />
+                          <b>Recommended alternative:</b> Switch Voice Engine above to <b>Meta MMS (Khmer offline CPU)</b> or <b>Edge TTS (cloud)</b> — both work smoothly on any laptop or PC!
+                        </div>
+                      </div>
+                    ) : (
+                      /* HARDWARE IS CAPABLE: SHOW INSTALL BUTTON */
+                      <div
+                        style={{
+                          background: "var(--bg-card)",
+                          border: "1px solid #eab308",
+                          borderRadius: 8,
+                          padding: "14px 16px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Icon name="info" size={16} className="info-icon" />
+                          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                            Local Voice Engine Not Installed
+                          </span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                          To generate voices completely offline on this computer, install the local VoxCPM 2 engine.
+                          {hasEnoughVram
+                            ? ` We detected ${gpuName} (${vramGb} GB VRAM) and will automatically configure CUDA GPU acceleration!`
+                            : ` We detected ${systemRamGb} GB system memory and will configure safe CPU mode.`}
+                        </p>
+                        <div>
+                          <button
+                            type="button"
+                            className="settings-btn-dark primary"
+                            onClick={handleInstallEngine}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                          >
+                            <Icon name="sparkles" size={13} />
+                            Install Local Voice Engine (~2.5 GB)
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  ) : setupStatus?.gpu_name && !setupStatus?.torch_cuda ? (
+                    <div
+                      style={{
+                        background: "var(--bg-card)",
+                        border: "1px solid #3b82f6",
+                        borderRadius: 8,
+                        padding: "14px 16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <Icon name="cpu" size={16} />
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                          NVIDIA GPU Detected — Enable CUDA Acceleration
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                        Your {setupStatus.gpu_name} is detected, but VoxCPM is currently running in CPU mode (~30s per voice).
+                        Click below to upgrade PyTorch with CUDA 12.4 to generate voices in ~1.5 seconds!
+                      </p>
+                      <div>
+                        <button
+                          type="button"
+                          className="settings-btn-dark primary"
+                          onClick={handleInstallEngine}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                        >
+                          <Icon name="sparkles" size={13} />
+                          Enable GPU CUDA Acceleration
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Reference Audio + Mic Recording */}
+                  <div className="settings-field-dark">
+                    <label htmlFor="s-vox-ref">Reference voice audio</label>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        id="s-vox-ref"
+                        className="settings-input-dark"
+                        style={{ flex: 1, minWidth: 220 }}
+                        placeholder="Path to audio clip (3–10s WAV or MP3)"
+                        value={s.voxcpm_ref_audio}
+                        onChange={(e) => set({ voxcpm_ref_audio: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        className="settings-btn-dark"
+                        onClick={() => pickAudio((path) => set({ voxcpm_ref_audio: path }))}
+                      >
+                        Browse…
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-btn-dark"
+                        style={{
+                          background: "#dc2626",
+                          borderColor: "#b91c1c",
+                          color: "#fff",
+                        }}
+                        onClick={() => setShowRecordModal(true)}
+                        title="Record your microphone voice directly for this character"
+                      >
+                        <Icon name="mic" size={13} />
+                        Record Voice
+                      </button>
+                      {s.voxcpm_ref_audio && s.voxcpm_ref_audio.trim() && (
+                        <button
+                          type="button"
+                          className="settings-btn-dark"
+                          onClick={() => set({ voxcpm_ref_audio: "", voxcpm_ref_text: "" })}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Voice Design Description */}
+                  <div className="settings-field-dark">
+                    <label htmlFor="s-vox-desc">Voice design (optional prompt)</label>
+                    <textarea
+                      id="s-vox-desc"
+                      className="settings-textarea-dark"
+                      rows={2}
+                      placeholder="A slow, warm female storyteller with a calm and mysterious tone"
+                      value={s.voxcpm_description}
+                      onChange={(e) => set({ voxcpm_description: e.target.value })}
+                    />
+                  </div>
+
+                  {/* Steps & Device Row */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                    <div className="settings-field-dark">
+                      <label htmlFor="s-vox-device">Compute device</label>
+                      <select
+                        id="s-vox-device"
+                        className="settings-select-dark"
+                        value={s.voxcpm_device || "auto"}
+                        onChange={(e) => set({ voxcpm_device: e.target.value })}
+                      >
+                        <option value="auto">Auto (CUDA GPU preferred)</option>
+                        <option value="cuda">CUDA (NVIDIA GPU — Fast ~1.5s)</option>
+                        <option value="cpu">CPU (Standard ~30s)</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-field-dark">
+                      <label htmlFor="s-vox-steps">Inference steps</label>
+                      <select
+                        id="s-vox-steps"
+                        className="settings-select-dark"
+                        value={s.voxcpm_steps || 6}
+                        onChange={(e) => set({ voxcpm_steps: +e.target.value })}
+                      >
+                        <option value={6}>6 steps (Fastest ~40% faster on GPU)</option>
+                        <option value={8}>8 steps (Balanced quality &amp; speed)</option>
+                        <option value={10}>10 steps (Maximum fidelity)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Server status & test row */}
+                  <div className="settings-actions-row-dark" style={{ marginTop: 4 }}>
+                    <button
+                      type="button"
+                      className="settings-btn-dark"
+                      disabled={serverCheck.loading}
+                      onClick={testVoxcpmServer}
+                    >
+                      <Icon name="check" size={13} />
+                      {serverCheck.loading ? "Checking…" : "Test Server"}
+                    </button>
+
+                    {voxStatus === "ready" ? (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: "#22c55e",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                          }}
+                        >
+                          <Icon name="check" size={12} /> Server ready (port 8000) {setupStatus?.torch_cuda ? "• CUDA GPU" : "• CPU"}
+                        </span>
+                        <button
+                          type="button"
+                          className="settings-btn-dark"
+                          style={{ padding: "4px 10px", fontSize: 11.5 }}
+                          onClick={async () => {
+                            setVoxStatus("starting");
+                            await invoke("stop_voxcpm_server");
+                            await invoke("start_voxcpm_server");
+                          }}
+                          title="Restart the local VoxCPM server"
+                        >
+                          Restart
+                        </button>
+                      </div>
+                    ) : voxStatus === "starting" ? (
+                      <span style={{ fontSize: 12, color: "#f59e0b" }}>
+                        Loading model weights…
+                      </span>
+                    ) : (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: "#9ca3af" }}>Server offline</span>
+                        <button
+                          type="button"
+                          className="settings-btn-dark"
+                          style={{ padding: "4px 10px", fontSize: 11.5 }}
+                          onClick={() => {
+                            setVoxStatus("starting");
+                            invoke("start_voxcpm_server");
+                          }}
+                        >
+                          Start server
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="settings-footnote-dark">
+                    Engine: voxcpm (CUDA / PyTorch) · Model: VoxCPM2 (Apache-2.0)
                   </div>
                 </div>
               </div>
@@ -1360,6 +1837,23 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
+
+      {/* Voice Recorder Modal for recording character reference audio */}
+      <VoiceRecorderModal
+        isOpen={showRecordModal}
+        onClose={() => setShowRecordModal(false)}
+        title="Record Reference Voice for VoxCPM"
+        subtitle="Speak 3 to 10 seconds of clear speech into your microphone for VoxCPM to clone"
+        promptText="សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។"
+        onSave={async (audioBase64) => {
+          const savedPath = await api.saveVoxcpmRecording(audioBase64);
+          set({
+            voxcpm_ref_audio: savedPath,
+            voxcpm_ref_text: "សួស្តី! នេះគឺជាការសាកល្បងសំឡេងតួអង្គរបស់ខ្ញុំ សម្រាប់គម្រោងវីដេអូថ្មី។",
+          });
+          setMsg({ text: "Reference voice recorded and saved successfully!", kind: "ok" });
+        }}
+      />
     </div>
   );
 }

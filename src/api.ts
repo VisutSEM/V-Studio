@@ -164,6 +164,8 @@ export const api = {
   exportVideo: (id: string, dest?: string | null) => invoke<string>("export_video", { id, dest: dest ?? null }),
   saveSceneRecording: (sceneId: number, audioBase64: string) =>
     invoke<number>("save_scene_recording", { sceneId, audioBase64 }),
+  saveVoxcpmRecording: (audioBase64: string) =>
+    invoke<string>("save_voxcpm_recording", { audioBase64 }),
   openOutputDir: (path?: string | null) => invoke<void>("open_output_dir", { path: path ?? null }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   getTtsRoute: () => invoke<TtsRoute>("get_tts_route"),

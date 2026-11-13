@@ -368,6 +368,57 @@ pub async fn save_scene_recording(
     Ok(ms)
 }
 
+#[tauri::command]
+pub async fn save_voxcpm_recording(
+    app: tauri::AppHandle,
+    audio_base64: String,
+) -> CmdResult<String> {
+    use base64::Engine;
+    use tauri::Manager;
+
+    let clean_base64 = if let Some(pos) = audio_base64.find(',') {
+        &audio_base64[pos + 1..]
+    } else {
+        &audio_base64
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(clean_base64)
+        .map_err(|e| err(&format!("Invalid base64 audio: {e}")))?;
+
+    let temp_in = std::env::temp_dir().join(format!("vox_rec_in_{}.bin", uuid::Uuid::new_v4()));
+    tokio::fs::write(&temp_in, &bytes).await.map_err(|e| err(&e.to_string()))?;
+
+    let data_dir = app.path().app_data_dir().map_err(|e| err(&e.to_string()))?;
+    tokio::fs::create_dir_all(&data_dir).await.map_err(|e| err(&e.to_string()))?;
+    let out_path = data_dir.join("voxcpm_character_voice.wav");
+
+    let status = crate::render::cmd("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            temp_in.to_string_lossy().as_ref(),
+            "-af",
+            "highpass=f=75,lowpass=f=7800,volume=1.2,dynaudnorm=p=0.9:m=10.0",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            out_path.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .await
+        .map_err(|e| err(&format!("ffmpeg execution failed: {e}")))?;
+
+    let _ = tokio::fs::remove_file(&temp_in).await;
+
+    if !status.success() {
+        return Err(err("ffmpeg failed to process character reference audio"));
+    }
+
+    let path_str = out_path.to_string_lossy().to_string();
+    Ok(path_str)
+}
+
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub struct UpdateCheckResult {
     pub current_version: String,
