@@ -30,6 +30,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": [
+      "../tools/*"
+    ],
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "icon": [
       "icons/32x32.png",

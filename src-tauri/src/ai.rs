@@ -343,38 +343,72 @@ pub async fn tts(
     }
 }
 
-fn find_workspace_root() -> Option<PathBuf> {
+pub const EMBEDDED_TTS_CLI: &str = include_str!("../../tools/tts_cli.py");
+
+fn ensure_tts_cli_script() -> Result<PathBuf> {
+    // 1. Check current working directory and ancestors
     if let Ok(cwd) = std::env::current_dir() {
         for dir in cwd.ancestors() {
-            if dir.join("tools").join("tts_cli.py").exists() {
-                return Some(dir.to_path_buf());
+            let p = dir.join("tools").join("tts_cli.py");
+            if p.exists() {
+                return Ok(p);
             }
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        for dir in exe.ancestors() {
-            if dir.join("tools").join("tts_cli.py").exists() {
-                return Some(dir.to_path_buf());
-            }
-        }
-    }
-    let fallback = PathBuf::from(r"D:\videogen");
-    if fallback.join("tools").join("tts_cli.py").exists() {
-        return Some(fallback);
-    }
-    None
-}
 
-fn find_python(root: &Path) -> PathBuf {
-    for venv_name in [".venv", ".venv-voxcpm", "venv"] {
-        let venv_py = root.join(venv_name).join("Scripts").join("python.exe");
-        if venv_py.exists() {
-            return venv_py;
-        }
-    }
+    // 2. Check exe directory and ancestors (e.g. installed app or bundle resources)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            for venv_name in [".venv", ".venv-voxcpm", "venv", "python"] {
+            let p = parent.join("tools").join("tts_cli.py");
+            if p.exists() {
+                return Ok(p);
+            }
+            let p_flat = parent.join("tts_cli.py");
+            if p_flat.exists() {
+                return Ok(p_flat);
+            }
+            let p_res = parent.join("resources").join("tools").join("tts_cli.py");
+            if p_res.exists() {
+                return Ok(p_res);
+            }
+        }
+        for dir in exe.ancestors() {
+            let p = dir.join("tools").join("tts_cli.py");
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+
+    // 3. Check known development fallback D:\videogen
+    let dev_fallback = PathBuf::from(r"D:\videogen\tools\tts_cli.py");
+    if dev_fallback.exists() {
+        return Ok(dev_fallback);
+    }
+
+    // 4. Extract embedded script into AppData
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let app_dir = PathBuf::from(&local_app_data).join("V-Studio").join("tools");
+        let _ = std::fs::create_dir_all(&app_dir);
+        let script = app_dir.join("tts_cli.py");
+        if std::fs::write(&script, EMBEDDED_TTS_CLI).is_ok() {
+            return Ok(script);
+        }
+    }
+
+    // 5. Fallback: extract to system temp directory
+    let temp_tools = std::env::temp_dir().join("vstudio_tools");
+    let _ = std::fs::create_dir_all(&temp_tools);
+    let temp_script = temp_tools.join("tts_cli.py");
+    std::fs::write(&temp_script, EMBEDDED_TTS_CLI)?;
+    Ok(temp_script)
+}
+
+fn find_python() -> PathBuf {
+    // 1. Check exe-adjacent portable venv (.venv-voxcpm, python, etc.)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            for venv_name in [".venv-voxcpm", ".venv", "venv", "python"] {
                 let p = parent.join(venv_name).join("Scripts").join("python.exe");
                 if p.exists() {
                     return p;
@@ -386,6 +420,65 @@ fn find_python(root: &Path) -> PathBuf {
             }
         }
     }
+
+    // 2. Check AppData venv (<LOCALAPPDATA>/V-Studio/voxcpm-venv or <APPDATA>/V-Studio/voxcpm-venv)
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        for sub in &["V-Studio", "com.vstudio.app", "videogen"] {
+            let p = PathBuf::from(&local_app_data)
+                .join(sub)
+                .join("voxcpm-venv")
+                .join("Scripts")
+                .join("python.exe");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+
+    // 3. Check workspace development venvs
+    for root_dir in [
+        std::env::current_dir().ok(),
+        std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())),
+        Some(PathBuf::from(r"D:\videogen")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for ancestor in root_dir.ancestors() {
+            for venv_name in [".venv-voxcpm", ".venv", "venv"] {
+                let p = ancestor.join(venv_name).join("Scripts").join("python.exe");
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+    }
+
+    // 4. Check common Windows Python installation paths
+    if cfg!(windows) {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            for py_ver in &["Python312", "Python311", "Python310", "Python313", "Python39"] {
+                let p = PathBuf::from(&local_app_data)
+                    .join("Programs")
+                    .join("Python")
+                    .join(py_ver)
+                    .join("python.exe");
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+        for py_ver in &["Python312", "Python311", "Python310", "Python313", "Python39"] {
+            let p = PathBuf::from(r"C:\Program Files")
+                .join(py_ver)
+                .join("python.exe");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+
+    // 5. Fall back to "python" on PATH
     PathBuf::from("python")
 }
 
@@ -397,18 +490,13 @@ async fn run_tts_cli(
     speed: &str,
     pitch: &str,
 ) -> Result<Vec<u8>> {
-    let root = find_workspace_root()
-        .ok_or_else(|| anyhow!("Could not locate VideoGen workspace or tools/tts_cli.py"))?;
-    let python = find_python(&root);
-    let cli_script = root.join("tools").join("tts_cli.py");
-    if !cli_script.exists() {
-        bail!("tools/tts_cli.py not found at {}", cli_script.display());
-    }
+    let cli_script = ensure_tts_cli_script()?;
+    let python = find_python();
 
     let ext = if engine == "edge_tts" { "mp3" } else { "wav" };
     let temp_out = std::env::temp_dir().join(format!("videogen_{}_{}.{}", engine, uuid::Uuid::new_v4(), ext));
 
-    let mut cmd = tokio::process::Command::new(python);
+    let mut cmd = tokio::process::Command::new(&python);
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -432,7 +520,13 @@ async fn run_tts_cli(
         cmd.arg("--pitch").arg(pitch);
     }
 
-    let output = cmd.output().await?;
+    let output = cmd.output().await.map_err(|e| {
+        anyhow!(
+            "Failed to run TTS process ({engine}) using python '{}' at '{}': {e}",
+            python.display(),
+            cli_script.display()
+        )
+    })?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         bail!("{engine} failed: {err}");
