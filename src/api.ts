@@ -38,6 +38,7 @@ export interface Settings {
   edge_pitch: number;
   output_dir: string;
   theme: "system" | "light" | "dark";
+  resolution: string;
 }
 export interface SettingsView extends Settings {
   has_llm_key: boolean; has_cf_token: boolean; has_azure_key: boolean; has_kiri_key: boolean;
@@ -159,11 +160,29 @@ export const api = {
     invoke<void>("delete_scene", { sceneId }),
   generateSceneVoice: (sceneId: number) => invoke<void>("generate_scene_voice", { sceneId }),
   generateSceneImage: (sceneId: number) => invoke<void>("generate_scene_image", { sceneId }),
-  render: (id: string, ambient: string | null, subtitles?: boolean | null) =>
-    invoke<string | null>("render_video", { id, ambient, subtitles: subtitles ?? null }),
+  render: (
+    id: string,
+    ambient: string | null,
+    subtitles?: boolean | null,
+    voiceVolume?: number | null,
+    ambientVolume?: number | null,
+    wordTracker?: boolean | null,
+    highlightColor?: string | null,
+  ) =>
+    invoke<string | null>("render_video", {
+      id,
+      ambient,
+      subtitles: subtitles ?? null,
+      voiceVolume: voiceVolume ?? null,
+      ambientVolume: ambientVolume ?? null,
+      wordTracker: wordTracker ?? null,
+      highlightColor: highlightColor ?? null,
+    }),
   exportVideo: (id: string, dest?: string | null) => invoke<string>("export_video", { id, dest: dest ?? null }),
   saveSceneRecording: (sceneId: number, audioBase64: string) =>
     invoke<number>("save_scene_recording", { sceneId, audioBase64 }),
+  importSceneAudio: (sceneId: number, sourcePath: string) =>
+    invoke<number>("import_scene_audio", { sceneId, sourcePath }),
   saveVoxcpmRecording: (audioBase64: string) =>
     invoke<string>("save_voxcpm_recording", { audioBase64 }),
   openOutputDir: (path?: string | null) => invoke<void>("open_output_dir", { path: path ?? null }),
@@ -200,6 +219,7 @@ export const onVoxcpmStatus = (cb: (s: string) => void) =>
   listen<string>("voxcpm-status", (e) => cb(e.payload));
 
 export const fileUrl = (dir: string, rel: string) => convertFileSrc(`${dir.replace(/\\/g, "/")}/${rel}`);
+export { convertFileSrc };
 
 // Same rounding as the backend (whole frames at 30 fps)
 export const sceneMs = (ms: number) => Math.floor((Math.ceil((ms * 30) / 1000) * 1000) / 30);

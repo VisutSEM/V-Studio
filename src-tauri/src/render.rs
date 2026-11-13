@@ -115,7 +115,7 @@ pub fn sanitize_filename(name: &str) -> String {
 }
 
 /// image + audio -> one clip with a slow zoom (in on even scenes, out on odd ones)
-async fn clip(dir: &Path, sc: &Scene) -> Result<()> {
+async fn clip(dir: &Path, sc: &Scene, res_w: u32, res_h: u32) -> Result<()> {
     let frames = subs::frames_for(sc.audio_ms.unwrap_or(0)).max(1);
     let secs = frames as f64 / subs::FPS as f64;
     let step = 0.15 / frames as f64;
@@ -137,9 +137,11 @@ async fn clip(dir: &Path, sc: &Scene) -> Result<()> {
     let vf = if has_image {
         let img = sc.image_path.as_deref().unwrap();
         args.extend(args!["-i", img]);
+        let crop_w = res_w * 4 / 3;
+        let crop_h = res_h * 4 / 3;
         format!(
-            "scale=2560:1440:force_original_aspect_ratio=increase,crop=2560:1440,\
-             zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={},format=yuv420p",
+            "scale={crop_w}:{crop_h}:force_original_aspect_ratio=increase,crop={crop_w}:{crop_h},\
+             zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={res_w}x{res_h}:fps={},format=yuv420p",
             subs::FPS
         )
     } else {
@@ -147,7 +149,7 @@ async fn clip(dir: &Path, sc: &Scene) -> Result<()> {
             "-f",
             "lavfi",
             "-i",
-            format!("color=c=black:s=1920x1080:r={}", subs::FPS)
+            format!("color=c=black:s={res_w}x{res_h}:r={}", subs::FPS)
         ]);
         "format=yuv420p".to_string()
     };
@@ -238,8 +240,23 @@ pub async fn render_video(
     id: String,
     ambient: Option<String>,
     subtitles: Option<bool>,
+    voice_volume: Option<f32>,
+    ambient_volume: Option<f32>,
+    word_tracker: Option<bool>,
+    highlight_color: Option<String>,
 ) -> CmdResult<Option<String>> {
-    Ok(render(&app, &state, &id, ambient, subtitles).await?)
+    Ok(render(
+        &app,
+        &state,
+        &id,
+        ambient,
+        subtitles,
+        voice_volume,
+        ambient_volume,
+        word_tracker,
+        highlight_color,
+    )
+    .await?)
 }
 
 async fn render(
@@ -248,6 +265,10 @@ async fn render(
     id: &str,
     ambient: Option<String>,
     subtitles: Option<bool>,
+    voice_volume: Option<f32>,
+    ambient_volume: Option<f32>,
+    word_tracker: Option<bool>,
+    highlight_color: Option<String>,
 ) -> Result<Option<String>> {
     let scenes = db::scenes(&st.pool, id).await?;
     if scenes.is_empty() || scenes.iter().all(|s| s.audio_path.is_none()) {
@@ -263,10 +284,24 @@ async fn render(
     tokio::fs::create_dir_all(dir.join("clips")).await?;
     tokio::fs::create_dir_all(dir.join("fonts")).await?;
     tokio::fs::write(dir.join("fonts/NotoSansKhmer-Regular.ttf"), KHMER_FONT).await?;
-    tokio::fs::write(dir.join("subs.ass"), subs::to_ass(&cues)).await?;
+
+    let is_tracker = word_tracker.unwrap_or(true);
+    let color_str = highlight_color.as_deref().unwrap_or("#facc15");
+    tokio::fs::write(
+        dir.join("subs.ass"),
+        subs::to_ass_with_tracker(&cues, is_tracker, Some(color_str)),
+    )
+    .await?;
     tokio::fs::write(dir.join("subs.srt"), subs::to_srt(&cues)).await?;
 
     // 1. Clips (existing ones are reused; they are deleted when a scene's audio/image changes)
+    let s = crate::settings::load(app);
+    let (res_w, res_h) = match s.resolution.as_str() {
+        "720p" => (1280, 720),
+        "4k" => (3840, 2160),
+        "shorts" => (1080, 1920),
+        _ => (1920, 1080),
+    };
     let todo: Vec<Scene> = scenes
         .iter()
         .filter(|s| !dir.join(format!("clips/scene_{:03}.mp4", s.idx)).exists())
@@ -274,7 +309,7 @@ async fn render(
         .collect();
     let failed = each_scene(app, id, "render", todo, 3, |sc| {
         let dir = dir.clone();
-        async move { clip(&dir, &sc).await }
+        async move { clip(&dir, &sc, res_w, res_h).await }
     })
     .await;
     if failed > 0 {
@@ -290,6 +325,8 @@ async fn render(
 
     let s = crate::settings::load(app);
     let burn_subs = subtitles.unwrap_or(s.subtitles_enabled);
+    let v_vol = voice_volume.unwrap_or(1.0).clamp(0.0, 2.0);
+    let bg_vol = ambient_volume.unwrap_or(0.12).clamp(0.0, 2.0);
 
     let ass = "ass=subs.ass:fontsdir=fonts";
     let mut a = args!["-y", "-f", "concat", "-safe", "0", "-i", "clips.txt"];
@@ -299,22 +336,30 @@ async fn render(
             if burn_subs {
                 a.extend(args![
                     "-filter_complex",
-                    format!("[0:v]{ass}[v];[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:normalize=0[a]"),
+                    format!("[0:v]{ass}[v];[0:a]volume={v_vol:.2}[fg];[1:a]volume={bg_vol:.2}[bg];[fg][bg]amix=inputs=2:duration=first:normalize=0[a]"),
                     "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"
                 ]);
             } else {
                 a.extend(args![
                     "-filter_complex",
-                    "[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:normalize=0[a]",
+                    format!("[0:a]volume={v_vol:.2}[fg];[1:a]volume={bg_vol:.2}[bg];[fg][bg]amix=inputs=2:duration=first:normalize=0[a]"),
                     "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"
                 ]);
             }
         }
         None => {
             if burn_subs {
-                a.extend(args!["-vf", ass, "-c:a", "copy"]);
+                if (v_vol - 1.0).abs() > 0.01 {
+                    a.extend(args!["-vf", ass, "-af", format!("volume={v_vol:.2}"), "-c:a", "aac", "-b:a", "192k"]);
+                } else {
+                    a.extend(args!["-vf", ass, "-c:a", "copy"]);
+                }
             } else {
-                a.extend(args!["-c:a", "copy"]);
+                if (v_vol - 1.0).abs() > 0.01 {
+                    a.extend(args!["-af", format!("volume={v_vol:.2}"), "-c:a", "aac", "-b:a", "192k"]);
+                } else {
+                    a.extend(args!["-c:a", "copy"]);
+                }
             }
         }
     }

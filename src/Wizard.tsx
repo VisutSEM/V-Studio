@@ -30,6 +30,20 @@ const STYLES: { id: string; title: string; sub: string; swatch: string }[] = [
   },
 ];
 
+function resolutionLabel(res: string): string {
+  switch (res) {
+    case "720p":
+      return "720p HD";
+    case "4k":
+      return "4K Ultra HD";
+    case "shorts":
+      return "1080 × 1920 (Shorts)";
+    case "1080p":
+    default:
+      return "1080p Full HD";
+  }
+}
+
 export default function Wizard({
   onDone,
   onCancel,
@@ -49,6 +63,7 @@ export default function Wizard({
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [ttsKind, setTtsKind] = useState<"auto" | "voxcpm" | "azure" | "gpt_sovits" | "edge_tts" | "meta_mms" | "kiri_tts">("auto");
+  const [resolution, setResolution] = useState("1080p");
 
   useEffect(() => {
     api.estimate(mins * 60).then(setEst);
@@ -57,7 +72,12 @@ export default function Wizard({
   useEffect(() => {
     api
       .getSettings()
-      .then((s) => setTtsKind(s.tts_kind))
+      .then((s) => {
+        setTtsKind(s.tts_kind);
+        if (s.resolution) {
+          setResolution(s.resolution);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -264,6 +284,12 @@ export default function Wizard({
               <div className="summary-row">
                 <span>Scene length</span>
                 <b>~{est.scene_len}s</b>
+              </div>
+              <div className="summary-row">
+                <span>Resolution</span>
+                <b title="Current Video Resolution from Settings">
+                  {resolutionLabel(resolution)}
+                </b>
               </div>
               <div className="summary-row">
                 <span>Language</span>

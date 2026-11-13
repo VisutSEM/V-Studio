@@ -1608,9 +1608,14 @@ export default function SettingsPage() {
 
                 <div className="settings-field-dark">
                   <label>Default Video Resolution</label>
-                  <select className="settings-select-dark" defaultValue="1080p">
+                  <select
+                    className="settings-select-dark"
+                    value={s.resolution || "1080p"}
+                    onChange={(e) => setS({ ...s, resolution: e.target.value })}
+                  >
                     <option value="1080p">1080p Full HD (1920 × 1080) — 16:9 Landscape</option>
-                    <option value="720p">720p HD (1280 × 720)</option>
+                    <option value="720p">720p HD (1280 × 720) — 16:9 Landscape</option>
+                    <option value="4k">4K Ultra HD (3840 × 2160) — 16:9 Landscape</option>
                     <option value="shorts">1080 × 1920 — 9:16 Portrait (Shorts/TikTok)</option>
                   </select>
                 </div>

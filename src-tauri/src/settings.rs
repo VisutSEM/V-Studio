@@ -88,6 +88,8 @@ pub struct Settings {
     pub output_dir: String,
     // Appearance: "system" | "light" | "dark"
     pub theme: String,
+    // Video Resolution: "1080p" | "720p" | "4k" | "shorts"
+    pub resolution: String,
 }
 
 impl Default for Settings {
@@ -129,6 +131,7 @@ impl Default for Settings {
             edge_pitch: 0,
             output_dir: crate::render::default_output_dir().to_string_lossy().to_string(),
             theme: "system".into(),
+            resolution: "1080p".into(),
         }
     }
 }

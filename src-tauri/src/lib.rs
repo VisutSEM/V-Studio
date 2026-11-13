@@ -75,6 +75,7 @@ pub fn run() {
             commands::add_scene,
             commands::delete_scene,
             commands::save_scene_recording,
+            commands::import_scene_audio,
             commands::save_voxcpm_recording,
             commands::check_for_updates,
             commands::download_update_installer,

@@ -369,6 +369,65 @@ pub async fn save_scene_recording(
 }
 
 #[tauri::command]
+pub async fn import_scene_audio(
+    state: State<'_, AppState>,
+    scene_id: i64,
+    source_path: String,
+) -> CmdResult<i64> {
+    let (idx, project_id): (i64, String) = sqlx::query_as("SELECT idx, project_id FROM scenes WHERE id = ?")
+        .bind(scene_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| err(&e.to_string()))?;
+
+    let dir = state.project_dir(&project_id);
+    tokio::fs::create_dir_all(dir.join("audio")).await.map_err(|e| err(&e.to_string()))?;
+    let rel = format!("audio/scene_{:03}.wav", idx);
+    let out_path = dir.join(&rel);
+
+    // Convert via ffmpeg to standard 48kHz mono 16-bit PCM WAV
+    let status = crate::render::cmd("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            &source_path,
+            "-ar",
+            "48000",
+            "-ac",
+            "1",
+            out_path.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .await
+        .map_err(|e| err(&format!("ffmpeg execution failed: {e}")))?;
+
+    if !status.success() {
+        return Err(err("ffmpeg failed to process imported audio file"));
+    }
+
+    let ms = crate::render::probe_ms(&out_path).await.map_err(|e| err(&e.to_string()))?;
+    let _ = tokio::fs::remove_file(dir.join(format!("clips/scene_{:03}.mp4", idx))).await;
+
+    sqlx::query("UPDATE scenes SET audio_path = ?, audio_ms = ? WHERE id = ?")
+        .bind(&rel)
+        .bind(ms)
+        .bind(scene_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| err(&e.to_string()))?;
+
+    // Auto-rebuild subtitles with updated timing
+    if let Ok(scenes) = db::scenes(&state.pool, &project_id).await {
+        if !scenes.is_empty() && scenes.iter().all(|s| s.audio_ms.is_some()) {
+            let cues = subs::build_cues(&scenes);
+            let _ = db::save_cues(&state.pool, &project_id, &cues).await;
+        }
+    }
+
+    Ok(ms)
+}
+
+#[tauri::command]
 pub async fn save_voxcpm_recording(
     app: tauri::AppHandle,
     audio_base64: String,
