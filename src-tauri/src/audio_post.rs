@@ -12,7 +12,8 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub const PAUSE_MS: u32 = 350;
 
 /// FFmpeg filter chain used for every scene.
-pub const NORMALIZE_FILTER: &str = "silenceremove=start_periods=1:start_silence=0.10:start_threshold=-50dB:stop_periods=1:stop_silence=0.10:stop_threshold=-50dB,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000";
+/// stop_periods=-1 trims silence only at the END of the audio file, keeping pauses between words intact.
+pub const NORMALIZE_FILTER: &str = "silenceremove=start_periods=1:start_silence=0.10:start_threshold=-50dB:stop_periods=-1:stop_silence=0.10:stop_threshold=-50dB,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000";
 
 fn tail(s: &str) -> String {
     let mut lines: Vec<&str> = s.lines().rev().take(8).collect();

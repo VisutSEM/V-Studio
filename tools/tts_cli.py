@@ -6,11 +6,16 @@ import asyncio
 import os
 import sys
 
+# Prefer cached local models without hanging on HuggingFace Hub network checks
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 def run_edge_tts(text: str, voice: str, out_path: str, slow: bool = False, speed: str = "", pitch: str = "") -> None:
     import edge_tts
 
-    rate = speed if speed else ("-10%" if slow else "+0%")
-    pitch_val = pitch if pitch else ("-2Hz" if slow else "+0Hz")
+    # In slow / horror mode, apply calm pace unless explicit non-zero speed was chosen
+    rate = speed if (speed and speed != "+0%") else ("-10%" if slow else "+0%")
+    pitch_val = pitch if (pitch and pitch != "+0Hz") else ("-2Hz" if slow else "+0Hz")
     
     # Try preferred voice; fallback to km-KH-SreymomNeural if it fails
     voices_to_try = [voice]
@@ -53,6 +58,9 @@ def get_mms():
             _mms_model = VitsModel.from_pretrained("facebook/mms-tts-khm", local_files_only=True)
             _mms_tokenizer = AutoTokenizer.from_pretrained("facebook/mms-tts-khm", local_files_only=True)
         except Exception:
+            # If local files not found in cache, allow online fetch
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
             _mms_model = VitsModel.from_pretrained("facebook/mms-tts-khm")
             _mms_tokenizer = AutoTokenizer.from_pretrained("facebook/mms-tts-khm")
         _mms_model.eval()

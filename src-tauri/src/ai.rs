@@ -278,6 +278,86 @@ pub fn audio_ext(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// Clean and sanitize narration text for accurate speech synthesis:
+/// Strips stage directions in brackets/parentheses, speaker prefixes ("Narrator:", "Scene 1:"),
+/// formatting marks, and extra punctuation so the TTS reads only the natural story sentences.
+pub fn clean_narration_for_speech(text: &str, _lang: &str) -> String {
+    let mut s = text.trim().to_string();
+
+    // 1. Strip stage directions / sound cues in brackets: [...] and (...)
+    let mut no_parens = String::with_capacity(s.len());
+    let mut depth = 0;
+    for c in s.chars() {
+        if c == '(' || c == '[' || c == '{' {
+            depth += 1;
+        } else if (c == ')' || c == ']' || c == '}') && depth > 0 {
+            depth -= 1;
+        } else if depth == 0 {
+            no_parens.push(c);
+        }
+    }
+    let cleaned_parens = no_parens.trim();
+    if !cleaned_parens.is_empty() {
+        s = cleaned_parens.to_string();
+    }
+
+    // 2. Strip speaker prefixes: "Narrator:", "Voiceover:", "Scene 1:", "អ្នករៀបរាប់៖", etc.
+    let prefixes = [
+        "narrator:", "narrator's voice:", "voiceover:", "voice-over:", "v.o.:", "vo:",
+        "scene:", "scene 1:", "scene 2:", "scene 3:", "scene 4:", "scene 5:",
+        "scene 6:", "scene 7:", "scene 8:", "scene 9:", "scene 10:",
+        "អ្នករៀបរាប់៖", "អ្នករៀបរាប់:", "អ្នកនិទាន៖", "អ្នកនិទាន:",
+        "សំឡេងរៀបរាប់៖", "សំឡេងរៀបរាប់:", "សំឡេង:",
+    ];
+    let lower = s.to_lowercase();
+    for p in prefixes {
+        if lower.starts_with(p) {
+            s = s[p.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    // Strip leading "Scene <N> - " or "Scene <N>:"
+    if let Some(rest) = s.strip_prefix("Scene ") {
+        if let Some(pos) = rest.find(|c: char| c == ':' || c == '-' || c == '.') {
+            if rest[..pos].trim().chars().all(|c| c.is_ascii_digit()) {
+                s = rest[pos + 1..].trim().to_string();
+            }
+        }
+    }
+
+    // 3. Remove formatting marks: asterisks, markdown, quotes
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '_' | '#' | '`' | '~' | '|' | '\\' | '"' | '“' | '”' | '«' | '»') {
+            continue;
+        }
+        out.push(c);
+    }
+
+    // 4. Normalize whitespace
+    let mut cleaned = String::with_capacity(out.len());
+    let mut last_space = false;
+    for c in out.chars() {
+        if c.is_whitespace() {
+            if !last_space {
+                cleaned.push(' ');
+                last_space = true;
+            }
+        } else {
+            cleaned.push(c);
+            last_space = false;
+        }
+    }
+
+    let res = cleaned.trim().to_string();
+    if res.is_empty() {
+        text.trim().to_string()
+    } else {
+        res
+    }
+}
+
 /// Text-to-speech with the configured engine. `slow` suits horror narration.
 pub async fn tts(
     s: &Settings,
@@ -287,6 +367,8 @@ pub async fn tts(
     lang: &str,
     slow: bool,
 ) -> Result<Vec<u8>> {
+    let clean = clean_narration_for_speech(text, lang);
+    let text = clean.as_str();
     match s.tts_kind {
         TtsKind::Auto => match crate::tts_router::effective_kind(s) {
             TtsKind::VoxCpm => voxcpm(s, voice, text, lang, slow).await,

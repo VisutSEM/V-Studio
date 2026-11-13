@@ -31,7 +31,8 @@
     "active": true,
     "targets": ["nsis"],
     "resources": [
-      "../tools/*"
+      "../tools/tts_cli.py",
+      "../tools/voxcpm_server.py"
     ],
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "icon": [

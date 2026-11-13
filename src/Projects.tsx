@@ -1,8 +1,11 @@
-import { ProjectCard, fileUrl } from "./api";
+import { ProjectCard, ScriptTaskStatus, fileUrl } from "./api";
 import { fmtDate, langLabel, minutes, sceneLabel, stageMeta } from "./format";
 import { Icon } from "./components/icons";
 
-function Thumb({ card }: { card: ProjectCard }) {
+function Thumb({ card, task }: { card: ProjectCard; task?: ScriptTaskStatus }) {
+  const isRunning = task?.is_running;
+  const canContinue = !isRunning && task?.can_continue;
+
   return (
     <div className="p-thumb">
       {card.thumb ? (
@@ -12,9 +15,44 @@ function Thumb({ card }: { card: ProjectCard }) {
           <Icon name="image" size={30} />
         </div>
       )}
-      <span className={`chip ${stageMeta(card.stage).tone}`}>
-        {stageMeta(card.stage).label}
-      </span>
+      {isRunning ? (
+        <span
+          className="chip warn"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            background: "#eff6ff",
+            color: "#1d4ed8",
+            borderColor: "#bfdbfe",
+            fontWeight: 600,
+          }}
+        >
+          <Icon name="sparkles" size={12} className="spin" />
+          Writing ({task.done}/{task.total})
+        </span>
+      ) : canContinue ? (
+        <span
+          className="chip warn"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            background: "#fef3c7",
+            color: "#b45309",
+            borderColor: "#fde68a",
+            fontWeight: 600,
+          }}
+          title={task.error || "Generation paused"}
+        >
+          <Icon name="sparkles" size={12} />
+          Paused ({task.done}/{task.total})
+        </span>
+      ) : (
+        <span className={`chip ${stageMeta(card.stage).tone}`}>
+          {stageMeta(card.stage).label}
+        </span>
+      )}
     </div>
   );
 }
@@ -26,6 +64,7 @@ export default function Projects({
   loading,
   missing,
   bannerOff,
+  scriptTasks,
   onDismissBanner,
   onOpenSettings,
   onRefresh,
@@ -40,6 +79,7 @@ export default function Projects({
   loading: boolean;
   missing: string[];
   bannerOff: boolean;
+  scriptTasks?: Record<string, ScriptTaskStatus>;
   onDismissBanner: () => void;
   onOpenSettings: () => void;
   onRefresh: () => void;
@@ -121,45 +161,74 @@ export default function Projects({
         </div>
       ) : cards.length ? (
         <div className="grid-cards">
-          {cards.map((card) => (
-            <article
-              key={card.id}
-              className="p-card"
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpen(card.id)}
-              onKeyDown={(e) => {
-                if (e.target !== e.currentTarget) return;
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onOpen(card.id);
-                }
-              }}
-            >
-              <Thumb card={card} />
-              <div>
-                <div className="p-title">{card.name}</div>
-                <div className="p-meta">
-                  {minutes(card.duration_sec)} min ·{" "}
-                  {sceneLabel(card.scene_count)} · {langLabel(card.language)}
+          {cards.map((card) => {
+            const task = scriptTasks?.[card.id];
+            return (
+              <article
+                key={card.id}
+                className="p-card"
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpen(card.id)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpen(card.id);
+                  }
+                }}
+              >
+                <Thumb card={card} task={task} />
+                <div>
+                  <div className="p-title">{card.name}</div>
+                  <div className="p-meta">
+                    {task?.is_running ? (
+                      <span style={{ color: "#2563eb", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <Icon name="sparkles" size={13} className="spin" />
+                        Writing script ({task.done}/{task.total})…
+                      </span>
+                    ) : task?.can_continue ? (
+                      <span style={{ color: "#d97706", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <Icon name="sparkles" size={13} />
+                        Paused ({task.done}/{task.total}) · Click to continue
+                      </span>
+                    ) : (
+                      <>
+                        {minutes(card.duration_sec)} min ·{" "}
+                        {sceneLabel(card.scene_count)} · {langLabel(card.language)}
+                      </>
+                    )}
+                  </div>
+                  {task?.is_running && task.total > 0 && (
+                    <div style={{ marginTop: 8, height: 4, background: "var(--line)", borderRadius: 2, overflow: "hidden" }}>
+                      <div
+                        style={{
+                          height: "100%",
+                          background: "#3b82f6",
+                          width: `${Math.round((task.done / task.total) * 100)}%`,
+                          transition: "width 0.3s ease",
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div className="p-foot">
-                <span>Edited {fmtDate(card.updated_at)}</span>
-                <button
-                  className="icon-btn danger"
-                  title="Delete project"
-                  aria-label={`Delete ${card.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(card);
-                  }}
-                >
-                  <Icon name="trash" size={16} />
-                </button>
-              </div>
-            </article>
-          ))}
+                <div className="p-foot">
+                  <span>Edited {fmtDate(card.updated_at)}</span>
+                  <button
+                    className="icon-btn danger"
+                    title="Delete project"
+                    aria-label={`Delete ${card.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(card);
+                    }}
+                  >
+                    <Icon name="trash" size={16} />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : (
         <div className="empty">

@@ -79,6 +79,8 @@ pub fn run() {
             commands::download_update_installer,
             commands::run_installer_and_exit,
             pipeline::generate_script,
+            pipeline::get_script_status,
+            pipeline::get_all_script_tasks,
             pipeline::generate_voice,
             pipeline::generate_images,
             pipeline::generate_scene_voice,

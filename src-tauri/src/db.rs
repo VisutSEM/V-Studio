@@ -5,6 +5,7 @@ use sqlx::{
 };
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
     pub dir: PathBuf,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, onUpdateDownloadProgress, ProjectCard, SettingsView, UpdateCheckResult } from "./api";
+import { api, onProgress, onProjectUpdated, onUpdateDownloadProgress, ProjectCard, ScriptTaskStatus, SettingsView, UpdateCheckResult } from "./api";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Icon } from "./components/icons";
 import Wizard from "./Wizard";
@@ -37,6 +37,7 @@ export default function App() {
   } | null>(null);
   const [downloadReadyPath, setDownloadReadyPath] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [scriptTasks, setScriptTasks] = useState<Record<string, ScriptTaskStatus>>({});
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +101,72 @@ export default function App() {
       .catch(() => {});
     return () => unbind();
   }, []);
+
+  useEffect(() => {
+    // Initial fetch of any background script tasks
+    api
+      .getAllScriptTasks()
+      .then((tasks) => {
+        const map: Record<string, ScriptTaskStatus> = {};
+        for (const t of tasks) {
+          map[t.project_id] = t;
+        }
+        setScriptTasks(map);
+      })
+      .catch(() => {});
+
+    // Listen to all progress events globally to track background script tasks
+    const unProgress = onProgress((p) => {
+      if (p.stage === "script") {
+        setScriptTasks((prev) => {
+          const isFinished = p.done >= p.total && p.total > 0 && !p.message;
+          const isError = Boolean(p.message && p.done < p.total);
+          return {
+            ...prev,
+            [p.project_id]: {
+              project_id: p.project_id,
+              is_running: !isFinished && !isError,
+              stage: isFinished ? "ScriptReady" : "script",
+              done: p.done,
+              total: p.total,
+              message: p.message,
+              error: isError ? p.message : null,
+              can_continue: isError,
+            },
+          };
+        });
+
+        // If completed, refresh project cards automatically so it goes through ready
+        if (p.done >= p.total && p.total > 0 && !p.message) {
+          refresh();
+        }
+      }
+    });
+
+    // Listen to project-updated event
+    const unProject = onProjectUpdated((payload) => {
+      refresh();
+      if (payload.stage === "ScriptReady") {
+        setScriptTasks((prev) => {
+          const updated = { ...prev };
+          if (updated[payload.project_id]) {
+            updated[payload.project_id] = {
+              ...updated[payload.project_id],
+              is_running: false,
+              stage: "ScriptReady",
+              can_continue: false,
+            };
+          }
+          return updated;
+        });
+      }
+    });
+
+    return () => {
+      unProgress.then((f) => f());
+      unProject.then((f) => f());
+    };
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
@@ -232,6 +299,9 @@ export default function App() {
         <div className="side-recent">
           {recent.map((c) => {
             const isCurrent = page.name === "pipeline" && page.id === c.id;
+            const task = scriptTasks[c.id];
+            const isTaskRunning = task?.is_running;
+            const isTaskPaused = !isTaskRunning && task?.can_continue;
             return (
               <button
                 key={c.id}
@@ -239,8 +309,14 @@ export default function App() {
                 onClick={() => setPage({ name: "pipeline", id: c.id })}
                 title={c.name}
               >
-                <span style={{ color: isCurrent ? "#f97316" : "var(--muted)", display: "inline-flex" }}>
-                  <Icon name={c.stage === "Rendered" ? "check" : "doc"} size={16} />
+                <span style={{ color: isCurrent ? "#f97316" : isTaskRunning ? "#3b82f6" : isTaskPaused ? "#f59e0b" : "var(--muted)", display: "inline-flex" }}>
+                  {isTaskRunning ? (
+                    <Icon name="sparkles" size={16} className="spin" />
+                  ) : isTaskPaused ? (
+                    <Icon name="sparkles" size={16} />
+                  ) : (
+                    <Icon name={c.stage === "Rendered" ? "check" : "doc"} size={16} />
+                  )}
                 </span>
                 <span className="truncate">{c.name}</span>
               </button>
@@ -355,6 +431,7 @@ export default function App() {
               loading={loading}
               missing={missing}
               bannerOff={bannerOff}
+              scriptTasks={scriptTasks}
               onDismissBanner={() => {
                 localStorage.setItem(BANNER_KEY, "1");
                 setBannerOff(true);

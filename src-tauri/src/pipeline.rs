@@ -8,11 +8,12 @@ use anyhow::{bail, Result};
 use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet},
     future::Future,
     path::Path,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
+        Arc, Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -106,19 +107,55 @@ where
 
 // ---------------------------------------------------------------- script
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 #[serde(default)]
-struct Chapter {
-    title: String,
-    summary: String,
+pub struct Chapter {
+    pub title: String,
+    pub summary: String,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 #[serde(default)]
-struct Outline {
-    title: String,
-    characters: String,
-    chapters: Vec<Chapter>,
+pub struct Outline {
+    pub title: String,
+    pub characters: String,
+    pub chapters: Vec<Chapter>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScriptCheckpoint {
+    pub project_id: String,
+    pub completed_chapters: usize,
+    pub total_chapters: usize,
+    pub prev_end: String,
+    pub next_idx: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ScriptTaskStatus {
+    pub project_id: String,
+    pub is_running: bool,
+    pub stage: String,
+    pub done: u32,
+    pub total: u32,
+    pub message: Option<String>,
+    pub error: Option<String>,
+    pub can_continue: bool,
+}
+
+static SCRIPT_TASKS: OnceLock<Mutex<HashMap<String, ScriptTaskStatus>>> = OnceLock::new();
+
+fn get_tasks_lock() -> &'static Mutex<HashMap<String, ScriptTaskStatus>> {
+    SCRIPT_TASKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn update_task_progress(id: &str, done: u32, total: u32, message: Option<String>) {
+    let mut tasks = get_tasks_lock().lock().unwrap();
+    if let Some(t) = tasks.get_mut(id) {
+        t.done = done;
+        t.total = total;
+        t.message = message;
+    }
 }
 
 #[derive(Deserialize)]
@@ -155,15 +192,222 @@ async fn llm_json<T: serde::de::DeserializeOwned>(
 }
 
 #[tauri::command]
+pub async fn get_script_status(
+    _app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> CmdResult<ScriptTaskStatus> {
+    // 1. Check in-memory task map first
+    {
+        let tasks = get_tasks_lock().lock().unwrap();
+        if let Some(status) = tasks.get(&id) {
+            return Ok(status.clone());
+        }
+    }
+
+    // 2. Check on-disk checkpoint
+    let dir = state.project_dir(&id);
+    let checkpoint_path = dir.join("script_checkpoint.json");
+    if checkpoint_path.exists() {
+        if let Ok(cp_data) = tokio::fs::read_to_string(&checkpoint_path).await {
+            if let Ok(cp) = serde_json::from_str::<ScriptCheckpoint>(&cp_data) {
+                return Ok(ScriptTaskStatus {
+                    project_id: id,
+                    is_running: false,
+                    stage: "script".into(),
+                    done: (cp.completed_chapters + 1) as u32,
+                    total: (cp.total_chapters + 1) as u32,
+                    message: Some("Previous generation was interrupted".into()),
+                    error: Some("Previous generation was interrupted".into()),
+                    can_continue: true,
+                });
+            }
+        }
+    }
+
+    // 3. Check outline without checkpoint (outline done, chapters interrupted before first save)
+    let outline_path = dir.join("outline.json");
+    if outline_path.exists() {
+        if let Ok(project) = db::project(&state.pool, &id).await {
+            if project.stage == "Draft" {
+                return Ok(ScriptTaskStatus {
+                    project_id: id,
+                    is_running: false,
+                    stage: "script".into(),
+                    done: 1,
+                    total: 2,
+                    message: Some("Outline saved; chapters not completed".into()),
+                    error: None,
+                    can_continue: true,
+                });
+            }
+        }
+    }
+
+    // Default: not running, no checkpoint
+    Ok(ScriptTaskStatus {
+        project_id: id,
+        is_running: false,
+        stage: "Draft".into(),
+        done: 0,
+        total: 0,
+        message: None,
+        error: None,
+        can_continue: false,
+    })
+}
+
+#[tauri::command]
+pub async fn get_all_script_tasks(
+    _app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<ScriptTaskStatus>> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 1. In-memory tasks
+    {
+        let tasks = get_tasks_lock().lock().unwrap();
+        for (_, t) in tasks.iter() {
+            result.push(t.clone());
+            seen.insert(t.project_id.clone());
+        }
+    }
+
+    // 2. Projects with on-disk checkpoints not in memory
+    if let Ok(rows) = sqlx::query_as::<_, (String,)>("SELECT id FROM projects")
+        .fetch_all(&state.pool)
+        .await
+    {
+        for (pid,) in rows {
+            if !seen.contains(&pid) {
+                let dir = state.project_dir(&pid);
+                let cp_path = dir.join("script_checkpoint.json");
+                if cp_path.exists() {
+                    if let Ok(cp_data) = tokio::fs::read_to_string(&cp_path).await {
+                        if let Ok(cp) = serde_json::from_str::<ScriptCheckpoint>(&cp_data) {
+                            result.push(ScriptTaskStatus {
+                                project_id: pid.clone(),
+                                is_running: false,
+                                stage: "script".into(),
+                                done: (cp.completed_chapters + 1) as u32,
+                                total: (cp.total_chapters + 1) as u32,
+                                message: Some("Interrupted".into()),
+                                error: Some("Interrupted".into()),
+                                can_continue: true,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn generate_script(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
+    continue_from_saved: Option<bool>,
 ) -> CmdResult<u32> {
-    Ok(script(&app, &state, &id).await?)
+    let cont = continue_from_saved.unwrap_or(false);
+    {
+        let mut tasks = get_tasks_lock().lock().unwrap();
+        if let Some(t) = tasks.get(&id) {
+            if t.is_running {
+                return Ok(0);
+            }
+        }
+        tasks.insert(
+            id.clone(),
+            ScriptTaskStatus {
+                project_id: id.clone(),
+                is_running: true,
+                stage: "script".into(),
+                done: 0,
+                total: 1,
+                message: Some("Starting script generation...".into()),
+                error: None,
+                can_continue: false,
+            },
+        );
+    }
+
+    let app_clone = app.clone();
+    let st_clone = (*state).clone();
+    let id_clone = id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        run_script_task(app_clone, st_clone, id_clone, cont).await;
+    });
+
+    Ok(0)
 }
 
-async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
+async fn run_script_task(
+    app: AppHandle,
+    st: AppState,
+    id: String,
+    continue_from_saved: bool,
+) {
+    let res = script_work(&app, &st, &id, continue_from_saved).await;
+    let mut tasks = get_tasks_lock().lock().unwrap();
+    match res {
+        Err(e) => {
+            let err_msg = format!("{e:#}");
+            eprintln!("[ScriptTask] Script generation failed for {id}: {err_msg}");
+            let (done, total) = tasks.get(&id).map(|t| (t.done, t.total)).unwrap_or((0, 1));
+            tasks.insert(
+                id.clone(),
+                ScriptTaskStatus {
+                    project_id: id.clone(),
+                    is_running: false,
+                    stage: "script".into(),
+                    done,
+                    total,
+                    message: Some(err_msg.clone()),
+                    error: Some(err_msg.clone()),
+                    can_continue: true,
+                },
+            );
+            emit(&app, &id, "script", done, total, Some(err_msg));
+        }
+        Ok(_) => {
+            let total = tasks.get(&id).map(|t| t.total).unwrap_or(1);
+            tasks.insert(
+                id.clone(),
+                ScriptTaskStatus {
+                    project_id: id.clone(),
+                    is_running: false,
+                    stage: "ScriptReady".into(),
+                    done: total,
+                    total,
+                    message: None,
+                    error: None,
+                    can_continue: false,
+                },
+            );
+            emit(&app, &id, "script", total, total, None);
+            let _ = app.emit(
+                "project-updated",
+                serde_json::json!({
+                    "project_id": &id,
+                    "stage": "ScriptReady"
+                }),
+            );
+        }
+    }
+}
+
+async fn script_work(
+    app: &AppHandle,
+    st: &AppState,
+    id: &str,
+    continue_from_saved: bool,
+) -> Result<u32> {
     let p = db::project(&st.pool, id).await?;
     if p.prompt.trim().is_empty() {
         bail!("Write a prompt first");
@@ -172,42 +416,98 @@ async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
     let key = settings::llm_key()?;
     let (scene_len, total) = planner::plan_scenes(p.duration_sec as u32);
     let k = total.div_ceil(planner::CHAPTER_SCENES);
-
-    // Reset everything built from the old script
     let dir = st.project_dir(id);
-    sqlx::query("DELETE FROM scenes WHERE project_id = ?")
-        .bind(id)
-        .execute(&st.pool)
-        .await?;
-    sqlx::query("DELETE FROM subtitles WHERE project_id = ?")
-        .bind(id)
-        .execute(&st.pool)
-        .await?;
-    for sub in ["audio", "images", "clips"] {
-        let _ = tokio::fs::remove_dir_all(dir.join(sub)).await;
-    }
-    let _ = tokio::fs::remove_file(dir.join("final.mp4")).await;
+    tokio::fs::create_dir_all(&dir).await?;
+    let outline_path = dir.join("outline.json");
+    let checkpoint_path = dir.join("script_checkpoint.json");
 
-    // 1. Outline
-    emit(app, id, "script", 0, k + 1, None);
-    let outline: Outline = llm_json(
-        &s,
-        &key,
-        &planner::outline_system(
-            &p.language,
-            &p.style,
-            (p.duration_sec as u32 / 60).max(1),
-            k,
-        ),
-        &p.prompt,
-    )
-    .await?;
-    sqlx::query("UPDATE projects SET character_sheet = ? WHERE id = ?")
-        .bind(&outline.characters)
-        .bind(id)
-        .execute(&st.pool)
-        .await?;
-    emit(app, id, "script", 1, k + 1, None);
+    let mut start_chapter = 0usize;
+    let mut idx = 0i64;
+    let mut prev_end = String::new();
+    let mut loaded_outline: Option<Outline> = None;
+
+    if continue_from_saved && outline_path.exists() {
+        if let Ok(data) = tokio::fs::read_to_string(&outline_path).await {
+            if let Ok(parsed) = serde_json::from_str::<Outline>(&data) {
+                if !parsed.chapters.is_empty() {
+                    loaded_outline = Some(parsed);
+                }
+            }
+        }
+        if checkpoint_path.exists() {
+            if let Ok(cp_data) = tokio::fs::read_to_string(&checkpoint_path).await {
+                if let Ok(cp) = serde_json::from_str::<ScriptCheckpoint>(&cp_data) {
+                    start_chapter = cp.completed_chapters;
+                    idx = cp.next_idx;
+                    prev_end = cp.prev_end;
+                }
+            }
+        }
+        // Verify idx from DB
+        let row: (i64,) = sqlx::query_as("SELECT COALESCE(MAX(idx) + 1, 0) FROM scenes WHERE project_id = ?")
+            .bind(id)
+            .fetch_one(&st.pool)
+            .await
+            .unwrap_or((0,));
+        if row.0 > idx {
+            idx = row.0;
+        }
+    }
+
+    let outline = match loaded_outline {
+        Some(o) => o,
+        None => {
+            // Fresh start: Reset everything built from the old script
+            sqlx::query("DELETE FROM scenes WHERE project_id = ?")
+                .bind(id)
+                .execute(&st.pool)
+                .await?;
+            sqlx::query("DELETE FROM subtitles WHERE project_id = ?")
+                .bind(id)
+                .execute(&st.pool)
+                .await?;
+            for sub in ["audio", "images", "clips"] {
+                let _ = tokio::fs::remove_dir_all(dir.join(sub)).await;
+            }
+            let _ = tokio::fs::remove_file(dir.join("final.mp4")).await;
+            let _ = tokio::fs::remove_file(&checkpoint_path).await;
+            let _ = tokio::fs::remove_file(&outline_path).await;
+
+            // 1. Outline
+            update_task_progress(id, 0, k + 1, Some("Planning outline...".into()));
+            emit(app, id, "script", 0, k + 1, None);
+
+            let generated: Outline = llm_json(
+                &s,
+                &key,
+                &planner::outline_system(
+                    &p.language,
+                    &p.style,
+                    (p.duration_sec as u32 / 60).max(1),
+                    k,
+                ),
+                &p.prompt,
+            )
+            .await?;
+
+            if let Ok(json_str) = serde_json::to_string_pretty(&generated) {
+                let _ = tokio::fs::write(&outline_path, json_str).await;
+            }
+            sqlx::query("UPDATE projects SET character_sheet = ? WHERE id = ?")
+                .bind(&generated.characters)
+                .bind(id)
+                .execute(&st.pool)
+                .await?;
+
+            start_chapter = 0;
+            idx = 0;
+            prev_end.clear();
+            generated
+        }
+    };
+
+    update_task_progress(id, (start_chapter + 1) as u32, k + 1, None);
+    emit(app, id, "script", (start_chapter + 1) as u32, k + 1, None);
 
     let outline_text = outline
         .chapters
@@ -218,10 +518,9 @@ async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
         .join("\n");
 
     // 2. One call per chapter, saved as it goes
-    let (mut idx, mut prev_end) = (0i64, String::new());
-    for i in 0..k {
-        let n = (total - i * planner::CHAPTER_SCENES).min(planner::CHAPTER_SCENES);
-        let ch = outline.chapters.get(i as usize).cloned().unwrap_or_default();
+    for i in start_chapter..k as usize {
+        let n = (total - (i as u32) * planner::CHAPTER_SCENES).min(planner::CHAPTER_SCENES);
+        let ch = outline.chapters.get(i).cloned().unwrap_or_default();
         let prev = if prev_end.is_empty() {
             String::new()
         } else {
@@ -238,7 +537,7 @@ async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
         let g: GenScenes = llm_json(
             &s,
             &key,
-            &planner::chapter_system(&p.language, &p.style, &outline.title, i + 1, k, n, scene_len),
+            &planner::chapter_system(&p.language, &p.style, &outline.title, (i + 1) as u32, k, n, scene_len),
             &user,
         )
         .await?;
@@ -268,8 +567,23 @@ async fn script(app: &AppHandle, st: &AppState, id: &str) -> Result<u32> {
             .last()
             .map(|s| s.narration.clone())
             .unwrap_or_default();
-        emit(app, id, "script", i + 2, k + 1, None);
+
+        let cp = ScriptCheckpoint {
+            project_id: id.to_string(),
+            completed_chapters: i + 1,
+            total_chapters: k as usize,
+            prev_end: prev_end.clone(),
+            next_idx: idx,
+        };
+        if let Ok(cp_json) = serde_json::to_string(&cp) {
+            let _ = tokio::fs::write(&checkpoint_path, cp_json).await;
+        }
+
+        update_task_progress(id, (i + 2) as u32, k + 1, None);
+        emit(app, id, "script", (i + 2) as u32, k + 1, None);
     }
+
+    let _ = tokio::fs::remove_file(&checkpoint_path).await;
     db::set_stage(&st.pool, id, "ScriptReady", true).await?;
     Ok(0)
 }

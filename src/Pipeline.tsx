@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, onProgress, fileUrl, Detail, Progress, Scene } from "./api";
+import { api, onProgress, fileUrl, Detail, Progress, Scene, ScriptTaskStatus } from "./api";
 import { Icon } from "./components/icons";
 import { langLabel, stageName } from "./format";
 import { VoiceRecorderModal } from "./components/VoiceRecorderModal";
@@ -19,6 +19,7 @@ export default function Pipeline({
   const [busy, setBusy] = useState<string | null>(null);
   const [prog, setProg] = useState<Progress | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
+  const [scriptTask, setScriptTask] = useState<ScriptTaskStatus | null>(null);
   const lastErr = useRef("");
 
   // Project rename state
@@ -34,6 +35,7 @@ export default function Pipeline({
   // Audio playback state
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
+  const [autoPlayAll, setAutoPlayAll] = useState(false);
 
   // Per-scene edit state
   const [editingSceneId, setEditingSceneId] = useState<number | null>(null);
@@ -81,10 +83,45 @@ export default function Pipeline({
 
   useEffect(() => {
     load();
+
+    // Check backend script task status or saved checkpoint
+    api
+      .getScriptStatus(id)
+      .then((st) => {
+        setScriptTask(st);
+        if (st.is_running) {
+          setBusy("script");
+          setProg({
+            project_id: id,
+            stage: "script",
+            done: st.done,
+            total: st.total,
+            message: st.message ?? null,
+          });
+        }
+      })
+      .catch(() => {});
+
     const un = onProgress((p) => {
       if (p.project_id !== id) return;
       setProg(p);
       if (p.message) lastErr.current = p.message;
+
+      if (p.stage === "script") {
+        if (p.message && p.done < p.total) {
+          // Script generation failed or paused
+          setBusy(null);
+          setMsg({ text: `Script generation paused: ${p.message}`, kind: "error" });
+          api.getScriptStatus(id).then(setScriptTask).catch(() => {});
+          load();
+        } else if (p.done >= p.total && p.total > 0 && !p.message) {
+          // Completed all chapters!
+          setBusy(null);
+          setScriptTask(null);
+          setMsg({ text: "Script generated successfully! Ready for voice recording.", kind: "ok" });
+          load();
+        }
+      }
     });
     return () => {
       un.then((f) => f());
@@ -142,7 +179,7 @@ export default function Pipeline({
     }
   };
 
-  const toggleAudio = (s: Scene) => {
+  const playSceneAudio = (s: Scene, continuous: boolean = false) => {
     if (!s.audio_path || !d) return;
     const a = audioRef.current;
     if (!a) return;
@@ -150,11 +187,56 @@ export default function Pipeline({
     if (playingId === s.id) {
       a.pause();
       setPlayingId(null);
+      setAutoPlayAll(false);
       return;
     }
 
+    setAutoPlayAll(continuous);
     a.src = fileUrl(d.dir, s.audio_path);
-    a.play().then(() => setPlayingId(s.id)).catch(() => setPlayingId(null));
+    a.play().then(() => setPlayingId(s.id)).catch(() => {
+      setPlayingId(null);
+      setAutoPlayAll(false);
+    });
+  };
+
+  const toggleAudio = (s: Scene) => {
+    playSceneAudio(s, false);
+  };
+
+  const handleAudioEnded = () => {
+    if (!autoPlayAll || !d || playingId === null) {
+      setPlayingId(null);
+      return;
+    }
+
+    const currentIdx = sc.findIndex((s) => s.id === playingId);
+    if (currentIdx >= 0 && currentIdx + 1 < sc.length) {
+      const nextScene = sc[currentIdx + 1];
+      if (nextScene.audio_path) {
+        playSceneAudio(nextScene, true);
+        const el = document.getElementById(`scene-card-${nextScene.id}`);
+        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+    }
+    setPlayingId(null);
+    setAutoPlayAll(false);
+  };
+
+  const handleTogglePlayAll = () => {
+    if (playingId !== null && autoPlayAll) {
+      audioRef.current?.pause();
+      setPlayingId(null);
+      setAutoPlayAll(false);
+      return;
+    }
+
+    const startScene = (playingId !== null ? sc.find((s) => s.id === playingId) : null) || sc.find((s) => s.audio_path);
+    if (startScene) {
+      playSceneAudio(startScene, true);
+      const el = document.getElementById(`scene-card-${startScene.id}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   };
 
   const startEditScene = (s: Scene) => {
@@ -219,17 +301,47 @@ export default function Pipeline({
   const voiceDone = hasScript && sc.every((s) => s.audio_path);
   const withAudio = sc.filter((s) => s.audio_path).length;
   const withImage = sc.filter((s) => s.image_path).length;
+  const startScriptGeneration = async (continueFromSaved: boolean = false) => {
+    setBusy("script");
+    setMsg(null);
+    setProg(null);
+    lastErr.current = "";
+    try {
+      await api.script(id, continueFromSaved);
+      const st = await api.getScriptStatus(id);
+      setScriptTask(st);
+      if (st.is_running) {
+        setProg({
+          project_id: id,
+          stage: "script",
+          done: st.done,
+          total: st.total,
+          message: st.message ?? null,
+        });
+      }
+    } catch (e: any) {
+      setBusy(null);
+      setMsg({ text: String(e?.message || e), kind: "error" });
+    }
+  };
+
   const confirmRegenerateScript = () => {
     if (
       !hasScript ||
       confirm(
-        "Are you sure you want to generate the script again?\n\nThis will recreate all scenes from your prompt and DELETE all existing voice recordings and images for this project.",
+        "Are you sure you want to generate the script again from the beginning?\n\nThis will recreate all scenes from your prompt and DELETE all existing voice recordings and images for this project.",
       )
     ) {
-      run("script", () => api.script(id));
+      startScriptGeneration(false);
     }
   };
-  const generateScript = confirmRegenerateScript;
+  const generateScript = () => {
+    if (scriptTask && !scriptTask.is_running && scriptTask.can_continue) {
+      startScriptGeneration(true);
+    } else {
+      confirmRegenerateScript();
+    }
+  };
 
   const handleSaveModalPrompt = async (newPrompt: string) => {
     setSavingPrompt(true);
@@ -498,6 +610,26 @@ export default function Pipeline({
                   <span>Generate voices</span>
                 </button>
               )}
+              {withAudio > 0 && (
+                <button
+                  type="button"
+                  className="nitean-tool-btn"
+                  onClick={handleTogglePlayAll}
+                  style={
+                    autoPlayAll && playingId !== null
+                      ? { borderColor: "#3b82f6", color: "#2563eb", background: "#eff6ff" }
+                      : {}
+                  }
+                  title="Read through all scene narrations sequentially"
+                >
+                  <Icon
+                    name={autoPlayAll && playingId !== null ? "volume" : "play"}
+                    size={14}
+                    className={autoPlayAll && playingId !== null ? "pulse" : ""}
+                  />
+                  <span>{autoPlayAll && playingId !== null ? "Pause reading" : "Read all scenes"}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="nitean-tool-btn"
@@ -622,6 +754,60 @@ export default function Pipeline({
 
         {msg && <div className={`alert ${msg.kind}`}>{msg.text}</div>}
 
+        {/* Interrupted script generation banner */}
+        {scriptTask && !scriptTask.is_running && scriptTask.can_continue && (
+          <div
+            className="banner warn"
+            style={{
+              margin: "16px 0",
+              background: "#fffbeb",
+              borderColor: "#fde68a",
+              borderRadius: 12,
+              padding: "16px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+              <div style={{ color: "#d97706", marginTop: 2 }}>
+                <Icon name="sparkles" size={22} />
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14.5, color: "#92400e" }}>
+                  Script generation paused at chapter {scriptTask.done} of {scriptTask.total}
+                </div>
+                <div style={{ fontSize: 13, color: "#b45309", marginTop: 2 }}>
+                  {scriptTask.error || "Generation was interrupted. You can continue without losing previously generated scenes."}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={!!busy}
+                onClick={() => startScriptGeneration(true)}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 600 }}
+              >
+                <Icon name="sparkles" size={14} />
+                Continue Script Generation
+              </button>
+              <button
+                type="button"
+                className="btn sm ghost"
+                disabled={!!busy}
+                onClick={confirmRegenerateScript}
+                title="Discard saved progress and regenerate script from the beginning"
+              >
+                Restart from Beginning
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Chapter 1 Header */}
         <div className="nitean-chapter-row">
           <div className="nitean-chapter-left">
@@ -630,7 +816,33 @@ export default function Pipeline({
               {d.project.name}
             </span>
           </div>
-          <span className="nitean-chapter-count">{sc.length} scenes</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {withAudio > 0 && (
+              <button
+                type="button"
+                className={`btn sm ${autoPlayAll && playingId !== null ? "warn" : "ghost"}`}
+                onClick={handleTogglePlayAll}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 12px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 20,
+                }}
+                title={autoPlayAll && playingId !== null ? "Pause reading" : "Read all scenes sequentially"}
+              >
+                <Icon
+                  name={autoPlayAll && playingId !== null ? "volume" : "play"}
+                  size={14}
+                  className={autoPlayAll && playingId !== null ? "pulse" : ""}
+                />
+                {autoPlayAll && playingId !== null ? "Pause Reading" : "Read All Scenes"}
+              </button>
+            )}
+            <span className="nitean-chapter-count">{sc.length} scenes</span>
+          </div>
         </div>
 
         {/* 4-Column Scene Grid */}
@@ -644,7 +856,12 @@ export default function Pipeline({
               const durText = s.audio_ms ? `${(s.audio_ms / 1000).toFixed(1)}s` : null;
 
               return (
-                <div key={s.id} className="nitean-scene-card">
+                <div
+                  key={s.id}
+                  id={`scene-card-${s.id}`}
+                  className={`nitean-scene-card${isPlayingThis ? " playing-active" : ""}`}
+                  style={isPlayingThis ? { border: "2px solid #3b82f6", boxShadow: "0 0 16px rgba(59, 130, 246, 0.25)" } : {}}
+                >
                   <div className="nitean-card-thumb">
                     {s.image_path ? (
                       <img
@@ -880,8 +1097,10 @@ export default function Pipeline({
       {/* Hidden audio element for previewing scene voices */}
       <audio
         ref={audioRef}
-        onEnded={() => setPlayingId(null)}
-        onPause={() => setPlayingId(null)}
+        onEnded={handleAudioEnded}
+        onPause={() => {
+          if (!autoPlayAll) setPlayingId(null);
+        }}
       />
 
       {/* Script Preview & Edit Modal */}

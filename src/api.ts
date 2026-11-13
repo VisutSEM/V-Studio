@@ -117,6 +117,17 @@ export interface UpdateDownloadProgress {
   error?: string | null;
 }
 
+export interface ScriptTaskStatus {
+  project_id: string;
+  is_running: boolean;
+  stage: string;
+  done: number;
+  total: number;
+  message?: string | null;
+  error?: string | null;
+  can_continue: boolean;
+}
+
 export const api = {
   list: () => invoke<Project[]>("list_projects"),
   listCards: () => invoke<ProjectCard[]>("list_project_cards"),
@@ -127,7 +138,10 @@ export const api = {
   remove: (id: string) => invoke<void>("delete_project", { id }),
   estimate: (durationSec: number) => invoke<{ scene_len: number; scenes: number }>("estimate", { durationSec }),
   clearAsset: (sceneId: number, kind: "image" | "audio") => invoke<void>("clear_asset", { sceneId, kind }),
-  script: (id: string) => invoke<number>("generate_script", { id }),
+  script: (id: string, continueFromSaved?: boolean) =>
+    invoke<number>("generate_script", { id, continueFromSaved: continueFromSaved ?? false }),
+  getScriptStatus: (id: string) => invoke<ScriptTaskStatus>("get_script_status", { id }),
+  getAllScriptTasks: () => invoke<ScriptTaskStatus[]>("get_all_script_tasks"),
   voice: (id: string, force?: boolean) =>
     invoke<number>("generate_voice", { id, force: force ?? false }),
   images: (id: string) => invoke<number>("generate_images", { id }),
@@ -174,6 +188,8 @@ export const api = {
 };
 
 export const onProgress = (cb: (p: Progress) => void) => listen<Progress>("pipeline-progress", (e) => cb(e.payload));
+export const onProjectUpdated = (cb: (payload: { project_id: string; stage: string }) => void) =>
+  listen<{ project_id: string; stage: string }>("project-updated", (e) => cb(e.payload));
 export const onUpdateDownloadProgress = (cb: (p: UpdateDownloadProgress) => void) =>
   listen<UpdateDownloadProgress>("update-download-progress", (e) => cb(e.payload));
 export const onVoxcpmSetupProgress = (cb: (p: SetupProgress) => void) =>
