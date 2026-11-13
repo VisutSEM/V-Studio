@@ -572,9 +572,42 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
               </button>
             </div>
 
-            {/* Quality badge */}
-            <div style={{ fontSize: 12.5, color: "#64748b", fontWeight: 500 }}>
-              1080p · 30 fps
+            {/* Quality badge & Subtitle Quick Toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => setSubtitlesEnabled((prev) => !prev)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "3px 9px",
+                  borderRadius: 6,
+                  border: subtitlesEnabled ? "1px solid #22c55e" : "1px solid #475569",
+                  background: subtitlesEnabled ? "rgba(34, 197, 94, 0.15)" : "rgba(100, 116, 139, 0.15)",
+                  color: subtitlesEnabled ? "#4ade80" : "#94a3b8",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
+                }}
+                title={subtitlesEnabled ? "Subtitles: ON (Click to turn OFF)" : "Subtitles: OFF (Click to turn ON)"}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: subtitlesEnabled ? "#22c55e" : "#64748b",
+                    display: "inline-block",
+                  }}
+                />
+                CC {subtitlesEnabled ? "ON" : "OFF"}
+              </button>
+
+              <div style={{ fontSize: 12.5, color: "#64748b", fontWeight: 500 }}>
+                1080p · 30 fps
+              </div>
             </div>
           </div>
         </div>
@@ -593,79 +626,180 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
         >
           {/* Subtitles Settings Card */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#ffffff" }}>Subtitles</h3>
-
-            {/* Font Picker */}
-            <div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Font</div>
-              <div
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#ffffff" }}>Subtitles</h3>
+              <button
+                type="button"
+                onClick={() => setSubtitlesEnabled((prev) => !prev)}
                 style={{
-                  fontSize: 13.5,
-                  fontWeight: 600,
-                  color: "#ffffff",
-                  padding: "6px 10px",
-                  background: "#181b26",
-                  borderRadius: 6,
-                  border: "1px solid #282c40",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 10px",
+                  borderRadius: 999,
+                  border: subtitlesEnabled ? "1px solid #22c55e" : "1px solid #475569",
+                  background: subtitlesEnabled ? "rgba(34, 197, 94, 0.15)" : "rgba(100, 116, 139, 0.15)",
+                  color: subtitlesEnabled ? "#4ade80" : "#94a3b8",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
                 }}
+                title={subtitlesEnabled ? "Subtitles are ON. Click to turn OFF." : "Subtitles are OFF. Click to turn ON."}
               >
-                {fontChoice}
-              </div>
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: subtitlesEnabled ? "#22c55e" : "#64748b",
+                    display: "inline-block",
+                  }}
+                />
+                {subtitlesEnabled ? "ON" : "OFF"}
+              </button>
             </div>
 
-            {/* Word Tracker Toggle */}
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            {/* Subtitle Master ON/OFF Switch Card */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "#181b26",
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: "1px solid #282c40",
+              }}
+            >
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff" }}>Word tracker</div>
-                <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 2, lineHeight: 1.4 }}>
-                  Highlights each word while it is spoken.
+                <div style={{ fontSize: 13, fontWeight: 600, color: subtitlesEnabled ? "#ffffff" : "#94a3b8" }}>
+                  Burn-in Subtitles
+                </div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                  {subtitlesEnabled ? "Overlay text will be burned into the exported video" : "Clean video without any subtitle overlay"}
                 </div>
               </div>
-              <input
-                type="checkbox"
-                checked={wordTrackerEnabled}
-                onChange={(e) => setWordTrackerEnabled(e.target.checked)}
-                style={{
-                  width: 17,
-                  height: 17,
-                  accentColor: "#e05e46",
-                  cursor: "pointer",
-                  marginTop: 2,
-                }}
-              />
+              <label style={{ position: "relative", display: "inline-block", width: 38, height: 20, cursor: "pointer", flexShrink: 0, marginLeft: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={subtitlesEnabled}
+                  onChange={(e) => setSubtitlesEnabled(e.target.checked)}
+                  style={{ opacity: 0, width: 0, height: 0 }}
+                />
+                <span
+                  style={{
+                    position: "absolute",
+                    cursor: "pointer",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: subtitlesEnabled ? "#22c55e" : "#334155",
+                    transition: "0.2s",
+                    borderRadius: 20,
+                  }}
+                >
+                  <span
+                    style={{
+                      position: "absolute",
+                      content: "''",
+                      height: 14,
+                      width: 14,
+                      left: subtitlesEnabled ? 21 : 3,
+                      bottom: 3,
+                      backgroundColor: "#ffffff",
+                      transition: "0.2s",
+                      borderRadius: "50%",
+                    }}
+                  />
+                </span>
+              </label>
             </div>
 
-            {/* Highlight Colour Swatches */}
-            <div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Highlight colour</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {HIGHLIGHT_COLORS.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => setHighlightColor(c.hex)}
-                    style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      backgroundColor: c.hex,
-                      border: highlightColor === c.hex ? "2px solid #ffffff" : "2px solid transparent",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      padding: 0,
-                      boxShadow: highlightColor === c.hex ? `0 0 10px ${c.hex}` : "none",
-                    }}
-                    title={`Highlight colour: ${c.id}`}
-                  >
-                    {highlightColor === c.hex && (
-                      <span style={{ color: "#000000", display: "flex", alignItems: "center" }}>
-                        <Icon name="check" size={11} />
-                      </span>
-                    )}
-                  </button>
-                ))}
+            {/* Subtitle Appearance Settings (Dimmed if Subtitles are OFF) */}
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                opacity: subtitlesEnabled ? 1 : 0.45,
+                pointerEvents: subtitlesEnabled ? "auto" : "none",
+                transition: "opacity 0.2s ease",
+              }}
+            >
+              {/* Font Picker */}
+              <div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Font</div>
+                <div
+                  style={{
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    color: "#ffffff",
+                    padding: "6px 10px",
+                    background: "#181b26",
+                    borderRadius: 6,
+                    border: "1px solid #282c40",
+                  }}
+                >
+                  {fontChoice}
+                </div>
+              </div>
+
+              {/* Word Tracker Toggle */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff" }}>Word tracker</div>
+                  <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 2, lineHeight: 1.4 }}>
+                    Highlights each word while it is spoken.
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={wordTrackerEnabled}
+                  onChange={(e) => setWordTrackerEnabled(e.target.checked)}
+                  style={{
+                    width: 17,
+                    height: 17,
+                    accentColor: "#e05e46",
+                    cursor: "pointer",
+                    marginTop: 2,
+                  }}
+                />
+              </div>
+
+              {/* Highlight Colour Swatches */}
+              <div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Highlight colour</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setHighlightColor(c.hex)}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        backgroundColor: c.hex,
+                        border: highlightColor === c.hex ? "2px solid #ffffff" : "2px solid transparent",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: 0,
+                        boxShadow: highlightColor === c.hex ? `0 0 10px ${c.hex}` : "none",
+                      }}
+                      title={`Highlight colour: ${c.id}`}
+                    >
+                      {highlightColor === c.hex && (
+                        <span style={{ color: "#000000", display: "flex", alignItems: "center" }}>
+                          <Icon name="check" size={11} />
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -794,7 +928,7 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
             <div style={{ height: 56, display: "flex", alignItems: "center", justifyContent: "center" }} title="Visuals">
               <Icon name="image" size={15} />
             </div>
-            <div style={{ height: 26, display: "flex", alignItems: "center", justifyContent: "center" }} title="Subtitles">
+            <div style={{ height: 26, display: "flex", alignItems: "center", justifyContent: "center", opacity: subtitlesEnabled ? 1 : 0.45 }} title={subtitlesEnabled ? "Subtitles Track (ON)" : "Subtitles Track (OFF)"}>
               <Icon name="doc" size={14} />
             </div>
             <div style={{ height: 22, display: "flex", alignItems: "center", justifyContent: "center" }} title="Audio">
@@ -936,8 +1070,9 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
                       width: cardWidth,
                       height: 26,
                       borderRadius: 4,
-                      background: isActive ? "#262b3d" : "#1a1d29",
-                      border: isActive ? "1px solid #3b82f6" : "1px solid #282c40",
+                      background: !subtitlesEnabled ? "#14161f" : isActive ? "#262b3d" : "#1a1d29",
+                      border: !subtitlesEnabled ? "1px dashed #262938" : isActive ? "1px solid #3b82f6" : "1px solid #282c40",
+                      opacity: !subtitlesEnabled ? 0.45 : 1,
                       flexShrink: 0,
                       padding: "4px 6px",
                       boxSizing: "border-box",
@@ -945,12 +1080,12 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
                       whiteSpace: "nowrap",
                       textOverflow: "ellipsis",
                       fontSize: 11,
-                      color: isActive ? "#93c5fd" : "#cbd5e1",
+                      color: !subtitlesEnabled ? "#64748b" : isActive ? "#93c5fd" : "#cbd5e1",
                       lineHeight: "16px",
                     }}
-                    title={s.narration}
+                    title={subtitlesEnabled ? s.narration : `(Subtitles OFF) ${s.narration}`}
                   >
-                    {s.narration || `Scene ${idx + 1}`}
+                    {!subtitlesEnabled ? `[OFF] ${s.narration}` : (s.narration || `Scene ${idx + 1}`)}
                   </div>
                 );
               })}
