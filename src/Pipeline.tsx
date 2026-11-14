@@ -107,6 +107,12 @@ export default function Pipeline({
       setProg(p);
       if (p.message) lastErr.current = p.message;
 
+      if (p.stage === "voice") {
+        if (p.done > 0) {
+          load();
+        }
+      }
+
       if (p.stage === "script") {
         if (p.message && p.done < p.total) {
           // Script generation failed or paused
@@ -749,6 +755,29 @@ export default function Pipeline({
                 }}
               />
             </div>
+            {prog.message && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#64748b",
+                  marginTop: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "#3b82f6",
+                    display: "inline-block",
+                  }}
+                />
+                <span>{prog.message}</span>
+              </div>
+            )}
           </div>
         )}
 

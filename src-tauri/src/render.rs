@@ -15,8 +15,9 @@ use tokio::{
     process::Command,
 };
 
-// Put NotoSansKhmer-Regular.ttf in src-tauri/fonts/ before building
+// Bundled Khmer fonts for ASS subtitles
 static KHMER_FONT: &[u8] = include_bytes!("../fonts/NotoSansKhmer-Regular.ttf");
+static KHMER_OS_BATTAMBANG_FONT: &[u8] = include_bytes!("../fonts/KhmerOSbattambang.ttf");
 
 macro_rules! args {
     ($($a:expr),* $(,)?) => { vec![$(String::from($a)),*] };
@@ -283,6 +284,7 @@ async fn render(
     let dir = st.project_dir(id);
     tokio::fs::create_dir_all(dir.join("clips")).await?;
     tokio::fs::create_dir_all(dir.join("fonts")).await?;
+    tokio::fs::write(dir.join("fonts/KhmerOSbattambang.ttf"), KHMER_OS_BATTAMBANG_FONT).await?;
     tokio::fs::write(dir.join("fonts/NotoSansKhmer-Regular.ttf"), KHMER_FONT).await?;
 
     let is_tracker = word_tracker.unwrap_or(true);

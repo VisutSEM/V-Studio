@@ -1671,7 +1671,7 @@ export default function SettingsPage() {
 
               <div className="settings-card-right">
                 <div style={{ color: "var(--muted)", fontSize: 14 }}>
-                  Version 0.2.3
+                  Version 0.3.1
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginTop: 4 }}>
@@ -1813,7 +1813,7 @@ export default function SettingsPage() {
                           display: "inline-block",
                         }}
                       />
-                      You're on the latest version (v0.2.3)
+                      You're on the latest version (v0.3.1)
                     </span>
                   )}
                 </div>

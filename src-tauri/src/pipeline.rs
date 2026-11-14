@@ -674,7 +674,7 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str, force: bool) -> Result<
     tokio::fs::create_dir_all(dir.join("audio")).await?;
 
     let slow = p.style == "2d_horror";
-    let todo: Vec<Scene> = if force {
+    let mut todo: Vec<Scene> = if force {
         scenes
     } else {
         scenes
@@ -685,44 +685,86 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str, force: bool) -> Result<
     if todo.is_empty() {
         return Ok(0);
     }
-    let (pool, s2, key, voice, lang) = (
-        st.pool.clone(),
-        s.clone(),
-        key.clone(),
-        p.voice.clone(),
-        p.language.clone(),
+    // Strict sequential 1-by-1 processing in ascending order (scene 1, 2, 3...)
+    todo.sort_by_key(|s| s.idx);
+
+    let total = todo.len() as u32;
+    emit(
+        app,
+        id,
+        "voice",
+        0,
+        total,
+        Some(format!("Starting voice recording: 1 to {total} scenes step by step...")),
     );
 
-    let concurrency = match engine {
-        settings::TtsKind::MetaMms => 2,
-        _ => 4,
-    };
+    let mut done = 0u32;
+    let mut failed = 0u32;
 
-    let failed = each_scene(app, id, "voice", todo, concurrency, |sc| {
-        let (pool, dir, s2, key, voice, lang) = (
-            pool.clone(),
-            dir.clone(),
-            s2.clone(),
-            key.clone(),
-            voice.clone(),
-            lang.clone(),
+    for sc in todo {
+        let scene_num = sc.idx + 1;
+        emit(
+            app,
+            id,
+            "voice",
+            done,
+            total,
+            Some(format!("Recording Scene #{scene_num} (step {}/{total})...", done + 1)),
         );
-        async move {
-            let bytes = retry(4, || {
-                ai::tts(&s2, key.as_deref(), &voice, &sc.narration, &lang, slow)
-            })
-            .await?;
-            let (rel, ms) = save_scene_audio(&dir, sc.idx, &bytes).await?;
-            sqlx::query("UPDATE scenes SET audio_path = ?, audio_ms = ? WHERE id = ?")
-                .bind(&rel)
-                .bind(ms)
-                .bind(sc.id)
-                .execute(&pool)
-                .await?;
-            Ok(())
+
+        let tts_res = retry(4, || {
+            ai::tts(&s, key.as_deref(), &p.voice, &sc.narration, &p.language, slow)
+        })
+        .await;
+
+        match tts_res {
+            Ok(bytes) => {
+                match save_scene_audio(&dir, sc.idx, &bytes).await {
+                    Ok((rel, ms)) => {
+                        let _ = sqlx::query("UPDATE scenes SET audio_path = ?, audio_ms = ? WHERE id = ?")
+                            .bind(&rel)
+                            .bind(ms)
+                            .bind(sc.id)
+                            .execute(&st.pool)
+                            .await;
+                        done += 1;
+                        emit(
+                            app,
+                            id,
+                            "voice",
+                            done,
+                            total,
+                            Some(format!("Scene #{scene_num} complete ({:.1}s)", ms as f64 / 1000.0)),
+                        );
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("[Voice] Scene #{scene_num} audio post-processing failed: {e:#}");
+                        emit(
+                            app,
+                            id,
+                            "voice",
+                            done,
+                            total,
+                            Some(format!("Scene #{scene_num} audio error: {e:#}")),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("[Voice] Scene #{scene_num} TTS generation failed: {e:#}");
+                emit(
+                    app,
+                    id,
+                    "voice",
+                    done,
+                    total,
+                    Some(format!("Scene #{scene_num} voice generation failed: {e:#}")),
+                );
+            }
         }
-    })
-    .await;
+    }
 
     if failed == 0 {
         db::set_stage(&st.pool, id, "VoiceReady", false).await?;
@@ -731,6 +773,7 @@ async fn voice(app: &AppHandle, st: &AppState, id: &str, force: bool) -> Result<
             eprintln!("assembler: {e:#}");
         }
     }
+    emit(app, id, "voice", done, total, None);
     Ok(failed)
 }
 

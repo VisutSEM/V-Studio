@@ -41,7 +41,7 @@ export default function Editor({
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
   const [wordTrackerEnabled, setWordTrackerEnabled] = useState(true);
   const [highlightColor, setHighlightColor] = useState("#facc15");
-  const [fontChoice] = useState("Kantumruy Pro · ក ខ គ");
+  const [fontChoice] = useState("Khmer OS Battambang · ក ខ គ");
   const [zoomLevel, setZoomLevel] = useState(1);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [exportedPath, setExportedPath] = useState<string | null>(null);
@@ -659,6 +659,7 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
                     lineHeight: 1.55,
                     fontSize: 22,
                     fontWeight: 700,
+                    fontFamily: "'Khmer OS Battambang', 'Battambang', 'Kantumruy Pro', sans-serif",
                     background: "transparent",
                     filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.9))",
                   }}
@@ -959,19 +960,26 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
             >
               {/* Font Picker */}
               <div>
-                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Font</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Font style</div>
                 <div
                   style={{
-                    fontSize: 13.5,
+                    fontSize: 13,
                     fontWeight: 600,
                     color: "#ffffff",
-                    padding: "6px 10px",
+                    padding: "7px 10px",
                     background: "#181b26",
                     borderRadius: 6,
                     border: "1px solid #282c40",
+                    fontFamily: "'Khmer OS Battambang', 'Battambang', sans-serif",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
                   }}
                 >
-                  {fontChoice}
+                  <span>{fontChoice}</span>
+                  <span style={{ fontSize: 10.5, color: "#22c55e", background: "rgba(34,197,94,0.15)", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>
+                    Active
+                  </span>
                 </div>
               </div>
 
@@ -2058,6 +2066,7 @@ STYLE: Cinematic, high-contrast, bold composition, professional YouTube thumbnai
                     lineHeight: 1.5,
                     fontSize: "clamp(24px, 3.2vw, 42px)",
                     fontWeight: 700,
+                    fontFamily: "'Khmer OS Battambang', 'Battambang', 'Kantumruy Pro', sans-serif",
                     background: "transparent",
                     filter: "drop-shadow(0 3px 8px rgba(0,0,0,0.95))",
                   }}
