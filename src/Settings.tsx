@@ -94,6 +94,8 @@ export default function SettingsPage() {
   const [setupStatus, setSetupStatus] = useState<VoxcpmSetupStatus | null>(null);
   const [setupProgress, setSetupProgress] = useState<SetupProgress | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [rvcModels, setRvcModels] = useState<RvcModelInfo[]>([]);
+  const [rvcTesting, setRvcTesting] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -203,9 +205,43 @@ export default function SettingsPage() {
       .catch((e) => setMsg({ text: String(e), kind: "error" }));
     api.getTtsRoute().then(setRoute).catch(() => {});
     api.getGpuInfo().then(setGpu).catch(() => {});
+    api.listRvcModels().then(setRvcModels).catch(() => {});
   }, []);
 
-  if (!s) return null;
+  if (!s) {
+    return (
+      <div
+        className="settings-view-dark"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "50vh",
+          color: "#94a3b8",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Icon name="refresh" size={22} className="spin" />
+          <span style={{ fontSize: 15, fontWeight: 500 }}>Loading settings…</span>
+        </div>
+        {msg && (
+          <div
+            style={{
+              color: "#ef4444",
+              marginTop: 12,
+              fontSize: 13,
+              background: "rgba(239,68,68,0.1)",
+              padding: "8px 14px",
+              borderRadius: 6,
+            }}
+          >
+            {msg.text}
+          </div>
+        )}
+      </div>
+    );
+  }
   const set = (p: Partial<S>) => setS({ ...s, ...p });
   const has = {
     llm: s.has_llm_key,
@@ -300,12 +336,7 @@ export default function SettingsPage() {
     }
   };
 
-  const [rvcModels, setRvcModels] = useState<RvcModelInfo[]>([]);
-  const [rvcTesting, setRvcTesting] = useState(false);
 
-  useEffect(() => {
-    api.listRvcModels().then(setRvcModels).catch(() => {});
-  }, []);
 
   const pickRvcModel = async () => {
     try {
@@ -1163,16 +1194,16 @@ export default function SettingsPage() {
                         <div style={{ display: "flex", gap: 8 }}>
                           <button
                             type="button"
-                            className={`settings-btn-dark ${s.rvc_mode === "local" ? "active" : ""}`}
-                            style={s.rvc_mode === "local" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
+                            className={`settings-btn-dark ${(s.rvc_mode || "local") === "local" ? "active" : ""}`}
+                            style={(s.rvc_mode || "local") === "local" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
                             onClick={() => set({ rvc_mode: "local" })}
                           >
                             Local Engine (Direct GPU/PyTorch)
                           </button>
                           <button
                             type="button"
-                            className={`settings-btn-dark ${s.rvc_mode === "server" ? "active" : ""}`}
-                            style={s.rvc_mode === "server" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
+                            className={`settings-btn-dark ${(s.rvc_mode || "local") === "server" ? "active" : ""}`}
+                            style={(s.rvc_mode || "local") === "server" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
                             onClick={() => set({ rvc_mode: "server" })}
                           >
                             RVC / Applio WebUI Server (API)
@@ -1180,13 +1211,13 @@ export default function SettingsPage() {
                         </div>
                       </div>
 
-                      {s.rvc_mode === "server" && (
+                      {(s.rvc_mode || "local") === "server" && (
                         <div className="settings-field-dark">
                           <label htmlFor="s-rvc-server">Server API URL</label>
                           <input
                             id="s-rvc-server"
                             className="settings-input-dark"
-                            value={s.rvc_server_url}
+                            value={s.rvc_server_url || ""}
                             placeholder="http://127.0.0.1:7865"
                             onChange={(e) => set({ rvc_server_url: e.target.value })}
                           />
@@ -1210,12 +1241,12 @@ export default function SettingsPage() {
                         {rvcModels.length > 0 ? (
                           <select
                             className="settings-select-dark"
-                            value={s.rvc_model_path}
+                            value={s.rvc_model_path || ""}
                             onChange={(e) => {
                               const chosen = rvcModels.find((m) => m.path === e.target.value);
                               set({
                                 rvc_model_path: e.target.value,
-                                rvc_index_path: chosen?.index_path || s.rvc_index_path,
+                                rvc_index_path: chosen?.index_path || s.rvc_index_path || "",
                               });
                             }}
                           >
@@ -1232,7 +1263,7 @@ export default function SettingsPage() {
                           <input
                             className="settings-input-dark"
                             placeholder="Select or paste .pth path"
-                            value={s.rvc_model_path}
+                            value={s.rvc_model_path || ""}
                             onChange={(e) => set({ rvc_model_path: e.target.value })}
                             style={{ flex: 1 }}
                           />
@@ -1253,7 +1284,7 @@ export default function SettingsPage() {
                           <input
                             className="settings-input-dark"
                             placeholder="Optional .index feature file for voice similarity"
-                            value={s.rvc_index_path}
+                            value={s.rvc_index_path || ""}
                             onChange={(e) => set({ rvc_index_path: e.target.value })}
                             style={{ flex: 1 }}
                           />
@@ -1271,9 +1302,9 @@ export default function SettingsPage() {
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                         <div className="settings-field-dark">
                           <label>
-                            Pitch Shift: <b>{s.rvc_pitch > 0 ? `+${s.rvc_pitch}` : s.rvc_pitch} semitones</b>
+                            Pitch Shift: <b>{(s.rvc_pitch ?? 0) > 0 ? `+${s.rvc_pitch ?? 0}` : (s.rvc_pitch ?? 0)} semitones</b>
                             <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>
-                              {s.rvc_pitch <= -10 ? "(Deep Ghost / Monster)" : s.rvc_pitch < 0 ? "(Male Voice)" : s.rvc_pitch === 0 ? "(Natural)" : "(Female / Child)"}
+                              {(s.rvc_pitch ?? 0) <= -10 ? "(Deep Ghost / Monster)" : (s.rvc_pitch ?? 0) < 0 ? "(Male Voice)" : (s.rvc_pitch ?? 0) === 0 ? "(Natural)" : "(Female / Child)"}
                             </span>
                           </label>
                           <input
@@ -1281,7 +1312,7 @@ export default function SettingsPage() {
                             min={-14}
                             max={14}
                             step={1}
-                            value={s.rvc_pitch}
+                            value={s.rvc_pitch ?? 0}
                             onChange={(e) => set({ rvc_pitch: +e.target.value })}
                             style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
                           />
@@ -1292,7 +1323,7 @@ export default function SettingsPage() {
                           <select
                             id="s-rvc-f0"
                             className="settings-select-dark"
-                            value={s.rvc_f0_method}
+                            value={s.rvc_f0_method || "rmvpe"}
                             onChange={(e) => set({ rvc_f0_method: e.target.value as any })}
                           >
                             <option value="rmvpe">RMVPE (Recommended — Fast & Precise)</option>
@@ -1307,14 +1338,14 @@ export default function SettingsPage() {
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                         <div className="settings-field-dark">
                           <label>
-                            Index Influence: <b>{Math.round(s.rvc_index_rate * 100)}%</b>
+                            Index Influence: <b>{Math.round((s.rvc_index_rate ?? 0.75) * 100)}%</b>
                           </label>
                           <input
                             type="range"
                             min={0}
                             max={1}
                             step={0.05}
-                            value={s.rvc_index_rate}
+                            value={s.rvc_index_rate ?? 0.75}
                             onChange={(e) => set({ rvc_index_rate: +e.target.value })}
                             style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
                           />
@@ -1322,14 +1353,14 @@ export default function SettingsPage() {
 
                         <div className="settings-field-dark">
                           <label>
-                            Consonants Protect: <b>{Math.round(s.rvc_protect * 100)}%</b>
+                            Consonants Protect: <b>{Math.round((s.rvc_protect ?? 0.33) * 100)}%</b>
                           </label>
                           <input
                             type="range"
                             min={0}
                             max={0.5}
                             step={0.01}
-                            value={s.rvc_protect}
+                            value={s.rvc_protect ?? 0.33}
                             onChange={(e) => set({ rvc_protect: +e.target.value })}
                             style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
                           />
