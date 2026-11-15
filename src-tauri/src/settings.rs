@@ -90,6 +90,16 @@ pub struct Settings {
     pub theme: String,
     // Video Resolution: "1080p" | "720p" | "4k" | "shorts"
     pub resolution: String,
+    // RVC v2 Voice Conversion
+    pub rvc_enabled: bool,
+    pub rvc_mode: String,
+    pub rvc_server_url: String,
+    pub rvc_model_path: String,
+    pub rvc_index_path: String,
+    pub rvc_pitch: i32,
+    pub rvc_f0_method: String,
+    pub rvc_index_rate: f32,
+    pub rvc_protect: f32,
 }
 
 impl Default for Settings {
@@ -132,6 +142,15 @@ impl Default for Settings {
             output_dir: crate::render::default_output_dir().to_string_lossy().to_string(),
             theme: "system".into(),
             resolution: "1080p".into(),
+            rvc_enabled: false,
+            rvc_mode: "local".into(),
+            rvc_server_url: "http://127.0.0.1:7865".into(),
+            rvc_model_path: String::new(),
+            rvc_index_path: String::new(),
+            rvc_pitch: 0,
+            rvc_f0_method: "rmvpe".into(),
+            rvc_index_rate: 0.75,
+            rvc_protect: 0.33,
         }
     }
 }

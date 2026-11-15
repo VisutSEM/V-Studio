@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, GpuInfo, onUpdateDownloadProgress, onVoxcpmSetupProgress, Settings as S, SettingsView, SetupProgress, TtsRoute, UpdateCheckResult, VoxcpmSetupStatus } from "./api";
+import { api, GpuInfo, onUpdateDownloadProgress, onVoxcpmSetupProgress, RvcModelInfo, Settings as S, SettingsView, SetupProgress, TtsRoute, UpdateCheckResult, VoxcpmSetupStatus } from "./api";
 import { Icon } from "./components/icons";
 import { VoiceRecorderModal } from "./components/VoiceRecorderModal";
 import { applyTheme } from "./theme";
@@ -10,7 +10,7 @@ import { applyTheme } from "./theme";
 type Kind = S["llm_kind"];
 type TtsKind = S["tts_kind"];
 type Msg = { text: string; kind: "ok" | "error" } | null;
-type TestKey = "llm" | "voice" | "cf";
+type TestKey = "llm" | "voice" | "cf" | "rvc";
 type TestMsg = { which: TestKey; text: string; ok: boolean } | null;
 type SettingsTab = "general" | "ai" | "voice" | "images" | "stock" | "about";
 
@@ -297,6 +297,64 @@ export default function SettingsPage() {
       if (typeof file === "string" && file) apply(file);
     } catch (e) {
       setMsg({ text: String(e), kind: "error" });
+    }
+  };
+
+  const [rvcModels, setRvcModels] = useState<RvcModelInfo[]>([]);
+  const [rvcTesting, setRvcTesting] = useState(false);
+
+  useEffect(() => {
+    api.listRvcModels().then(setRvcModels).catch(() => {});
+  }, []);
+
+  const pickRvcModel = async () => {
+    try {
+      const file = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "RVC Voice Model (.pth)", extensions: ["pth"] }],
+      });
+      if (typeof file === "string" && file) {
+        const matchingIndex = file.replace(/\.pth$/i, ".index");
+        set({
+          rvc_model_path: file,
+          rvc_index_path: s?.rvc_index_path ? s.rvc_index_path : matchingIndex,
+        });
+      }
+    } catch (e) {
+      setMsg({ text: String(e), kind: "error" });
+    }
+  };
+
+  const pickRvcIndex = async () => {
+    try {
+      const file = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "RVC Feature Index (.index)", extensions: ["index"] }],
+      });
+      if (typeof file === "string" && file) {
+        set({ rvc_index_path: file });
+      }
+    } catch (e) {
+      setMsg({ text: String(e), kind: "error" });
+    }
+  };
+
+  const testRvcVoice = async () => {
+    if (!s) return;
+    setRvcTesting(true);
+    setTestMsg(null);
+    try {
+      const sample = testVoiceText.trim() || "សួស្តី! នេះគឺជាការសាកល្បងសំឡេង RVC v2។";
+      const res = await api.testRvc(s, sample);
+      const audio = new Audio(`data:${res.mime};base64,${res.audio_base64}`);
+      await audio.play();
+      setTestMsg({ which: "rvc", text: "RVC v2 voice conversion successful! Playing sample audio.", ok: true });
+    } catch (e) {
+      setTestMsg({ which: "rvc", text: `RVC v2 test failed: ${String(e)}`, ok: false });
+    } finally {
+      setRvcTesting(false);
     }
   };
 
@@ -1049,6 +1107,264 @@ export default function SettingsPage() {
                   <div className="settings-footnote-dark">
                     Engine: voxcpm (CUDA / PyTorch) · Model: VoxCPM2 (Apache-2.0)
                   </div>
+                </div>
+              </div>
+
+              {/* Card 3: RVC v2 Voice Cloner & Character Changer */}
+              <div className="settings-card-dark">
+                <div className="settings-card-left">
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 18 }}>🎭</span>
+                    <h3 style={{ margin: 0 }}>RVC v2 Voice Changer</h3>
+                  </div>
+                  <p>
+                    Transform any narration into a custom character voice (scary ghost, demon, old monk, anime, or cloned voice) using local RVC v2 AI models (<code>.pth</code>).
+                  </p>
+                  <p style={{ marginTop: 8, fontSize: 12.5, color: "#94a3b8" }}>
+                    Runs locally on your <b>{gpuName}</b> using ~1.5 GB VRAM. Keeps Khmer pronunciation 100% natural while changing the character tone!
+                  </p>
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="settings-btn-dark sm"
+                      onClick={() => api.openOutputDir("tools/models/rvc")}
+                      title="Open tools/models/rvc folder in Explorer"
+                    >
+                      <Icon name="folder" size={13} />
+                      Open Models Folder
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-card-right">
+                  {/* Enable Switch */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,255,255,0.03)", padding: "12px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14, color: "#ffffff" }}>
+                        Enable RVC v2 Voice Conversion
+                      </div>
+                      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+                        Applies RVC character voice conversion to all generated narration scenes.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.rvc_enabled}
+                      onChange={(e) => set({ rvc_enabled: e.target.checked })}
+                      style={{ width: 20, height: 20, accentColor: "#e05e46", cursor: "pointer" }}
+                    />
+                  </div>
+
+                  {s.rvc_enabled && (
+                    <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
+                      {/* Mode selector */}
+                      <div className="settings-field-dark">
+                        <label>Conversion Mode</label>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            type="button"
+                            className={`settings-btn-dark ${s.rvc_mode === "local" ? "active" : ""}`}
+                            style={s.rvc_mode === "local" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
+                            onClick={() => set({ rvc_mode: "local" })}
+                          >
+                            Local Engine (Direct GPU/PyTorch)
+                          </button>
+                          <button
+                            type="button"
+                            className={`settings-btn-dark ${s.rvc_mode === "server" ? "active" : ""}`}
+                            style={s.rvc_mode === "server" ? { borderColor: "#e05e46", color: "#ffffff", background: "rgba(224,94,70,0.15)" } : {}}
+                            onClick={() => set({ rvc_mode: "server" })}
+                          >
+                            RVC / Applio WebUI Server (API)
+                          </button>
+                        </div>
+                      </div>
+
+                      {s.rvc_mode === "server" && (
+                        <div className="settings-field-dark">
+                          <label htmlFor="s-rvc-server">Server API URL</label>
+                          <input
+                            id="s-rvc-server"
+                            className="settings-input-dark"
+                            value={s.rvc_server_url}
+                            placeholder="http://127.0.0.1:7865"
+                            onChange={(e) => set({ rvc_server_url: e.target.value })}
+                          />
+                        </div>
+                      )}
+
+                      {/* Model (.pth) selector */}
+                      <div className="settings-field-dark">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <label>Voice Model (.pth)</label>
+                          <button
+                            type="button"
+                            className="btn-text-dark"
+                            onClick={() => api.listRvcModels().then(setRvcModels)}
+                            style={{ fontSize: 11.5, color: "#38bdf8", cursor: "pointer", background: "none", border: "none" }}
+                          >
+                            ↻ Refresh Models
+                          </button>
+                        </div>
+
+                        {rvcModels.length > 0 ? (
+                          <select
+                            className="settings-select-dark"
+                            value={s.rvc_model_path}
+                            onChange={(e) => {
+                              const chosen = rvcModels.find((m) => m.path === e.target.value);
+                              set({
+                                rvc_model_path: e.target.value,
+                                rvc_index_path: chosen?.index_path || s.rvc_index_path,
+                              });
+                            }}
+                          >
+                            <option value="">-- Choose from tools/models/rvc/ --</option>
+                            {rvcModels.map((m) => (
+                              <option key={m.path} value={m.path}>
+                                {m.name} ({m.size_mb} MB)
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
+
+                        <div style={{ display: "flex", gap: 8, marginTop: rvcModels.length > 0 ? 6 : 0 }}>
+                          <input
+                            className="settings-input-dark"
+                            placeholder="Select or paste .pth path"
+                            value={s.rvc_model_path}
+                            onChange={(e) => set({ rvc_model_path: e.target.value })}
+                            style={{ flex: 1 }}
+                          />
+                          <button
+                            type="button"
+                            className="settings-btn-dark"
+                            onClick={pickRvcModel}
+                          >
+                            Browse .pth
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Index (.index) selector */}
+                      <div className="settings-field-dark">
+                        <label>Feature Index (.index - Optional)</label>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input
+                            className="settings-input-dark"
+                            placeholder="Optional .index feature file for voice similarity"
+                            value={s.rvc_index_path}
+                            onChange={(e) => set({ rvc_index_path: e.target.value })}
+                            style={{ flex: 1 }}
+                          />
+                          <button
+                            type="button"
+                            className="settings-btn-dark"
+                            onClick={pickRvcIndex}
+                          >
+                            Browse .index
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Pitch & F0 Algorithm Row */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                        <div className="settings-field-dark">
+                          <label>
+                            Pitch Shift: <b>{s.rvc_pitch > 0 ? `+${s.rvc_pitch}` : s.rvc_pitch} semitones</b>
+                            <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>
+                              {s.rvc_pitch <= -10 ? "(Deep Ghost / Monster)" : s.rvc_pitch < 0 ? "(Male Voice)" : s.rvc_pitch === 0 ? "(Natural)" : "(Female / Child)"}
+                            </span>
+                          </label>
+                          <input
+                            type="range"
+                            min={-14}
+                            max={14}
+                            step={1}
+                            value={s.rvc_pitch}
+                            onChange={(e) => set({ rvc_pitch: +e.target.value })}
+                            style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
+                          />
+                        </div>
+
+                        <div className="settings-field-dark">
+                          <label htmlFor="s-rvc-f0">Pitch Algorithm (f0)</label>
+                          <select
+                            id="s-rvc-f0"
+                            className="settings-select-dark"
+                            value={s.rvc_f0_method}
+                            onChange={(e) => set({ rvc_f0_method: e.target.value as any })}
+                          >
+                            <option value="rmvpe">RMVPE (Recommended — Fast & Precise)</option>
+                            <option value="pm">PM (Parselmouth — Fast)</option>
+                            <option value="crepe">Crepe (High Detail)</option>
+                            <option value="harvest">Harvest</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Index Influence & Protect Row */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                        <div className="settings-field-dark">
+                          <label>
+                            Index Influence: <b>{Math.round(s.rvc_index_rate * 100)}%</b>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={s.rvc_index_rate}
+                            onChange={(e) => set({ rvc_index_rate: +e.target.value })}
+                            style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
+                          />
+                        </div>
+
+                        <div className="settings-field-dark">
+                          <label>
+                            Consonants Protect: <b>{Math.round(s.rvc_protect * 100)}%</b>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={0.5}
+                            step={0.01}
+                            value={s.rvc_protect}
+                            onChange={(e) => set({ rvc_protect: +e.target.value })}
+                            style={{ width: "100%", accentColor: "#e05e46", marginTop: 6 }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="settings-actions-row-dark" style={{ marginTop: 14 }}>
+                    <button
+                      type="button"
+                      className="settings-btn-dark"
+                      disabled={busy}
+                      onClick={save}
+                    >
+                      {busy ? "Saving…" : "Save Settings"}
+                    </button>
+                    {s.rvc_enabled && (
+                      <button
+                        type="button"
+                        className="settings-btn-dark"
+                        disabled={rvcTesting}
+                        onClick={testRvcVoice}
+                      >
+                        <Icon name="sparkles" size={13} />
+                        {rvcTesting ? "Converting…" : "Test RVC Voice"}
+                      </button>
+                    )}
+                  </div>
+
+                  {testMsg?.which === "rvc" && (
+                    <div className={`settings-alert-dark ${testMsg.ok ? "ok" : "err"}`} style={{ marginTop: 10 }}>
+                      {testMsg.text}
+                    </div>
+                  )}
                 </div>
               </div>
             </>

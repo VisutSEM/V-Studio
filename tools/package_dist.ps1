@@ -59,6 +59,19 @@ if (Test-Path (Join-Path $ProjectRoot "tools\tts_cli.py")) {
     Write-Host "   - tools/tts_cli.py"
 }
 
+if (Test-Path (Join-Path $ProjectRoot "tools\rvc_cli.py")) {
+    Copy-Item (Join-Path $ProjectRoot "tools\rvc_cli.py") (Join-Path $OutputDir "tools\rvc_cli.py") -Force
+    Write-Host "   - tools/rvc_cli.py"
+}
+
+$RvcModelsDir = Join-Path $ProjectRoot "tools\models\rvc"
+if (Test-Path $RvcModelsDir) {
+    $TargetRvc = Join-Path $OutputDir "tools\models\rvc"
+    New-Item -ItemType Directory -Path $TargetRvc -Force | Out-Null
+    Copy-Item (Join-Path $RvcModelsDir "*") $TargetRvc -Recurse -Force
+    Write-Host "   - tools/models/rvc/"
+}
+
 # VoxCPM 2 local server + reference voices (needed for GPU auto-routing)
 $VoxcpmServer = Join-Path $ProjectRoot "tools\voxcpm_server.py"
 if (Test-Path $VoxcpmServer) {

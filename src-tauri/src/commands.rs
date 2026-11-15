@@ -715,4 +715,72 @@ pub fn run_installer_and_exit(app: tauri::AppHandle, installer_path: String) -> 
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct RvcModelInfo {
+    pub name: String,
+    pub path: String,
+    pub index_path: String,
+    pub size_mb: f64,
+}
+
+#[tauri::command]
+pub async fn list_rvc_models() -> CmdResult<Vec<RvcModelInfo>> {
+    let py = crate::ai::find_python();
+    let rvc_script = crate::ai::ensure_rvc_cli_script().map_err(|e| err(&e.to_string()))?;
+
+    let mut cmd = tokio::process::Command::new(&py);
+    cmd.arg(&rvc_script).arg("--list-models");
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+
+    let output = cmd.output().await.map_err(|e| err(&e.to_string()))?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        if let Ok(models) = serde_json::from_str::<Vec<RvcModelInfo>>(&text) {
+            return Ok(models);
+        }
+    }
+    Ok(vec![])
+}
+
+#[tauri::command]
+pub async fn test_rvc(
+    app: tauri::AppHandle,
+    settings: Option<crate::settings::Settings>,
+    text: Option<String>,
+) -> CmdResult<crate::settings::TestTtsResult> {
+    use base64::Engine;
+    let s = settings.unwrap_or_else(|| crate::settings::load(&app));
+    let sample_text = text
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("សួស្តី! នេះគឺជាការសាកល្បងសំឡេង RVC v2។");
+    let is_english = sample_text.chars().any(|c| c.is_ascii_alphabetic())
+        && !sample_text.chars().any(|c| ('\u{1780}'..='\u{17FF}').contains(&c));
+
+    let base_voice = if is_english {
+        if !s.edge_voice_en.trim().is_empty() { &s.edge_voice_en } else { "en-US-AvaNeural" }
+    } else {
+        if !s.edge_voice_km.trim().is_empty() { &s.edge_voice_km } else { "km-KH-SreymomNeural" }
+    };
+    let base_bytes = crate::ai::edge_tts(base_voice, sample_text, false, 0, 0)
+        .await
+        .map_err(|e| err(&e.to_string()))?;
+
+    let converted = crate::ai::apply_rvc(&s, &base_bytes)
+        .await
+        .map_err(|e| err(&e.to_string()))?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&converted);
+
+    Ok(crate::settings::TestTtsResult {
+        len: converted.len(),
+        audio_base64: b64,
+        mime: "audio/wav".to_string(),
+    })
+}
+
 

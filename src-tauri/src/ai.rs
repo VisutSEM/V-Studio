@@ -369,7 +369,7 @@ pub async fn tts(
 ) -> Result<Vec<u8>> {
     let clean = clean_narration_for_speech(text, lang);
     let text = clean.as_str();
-    match s.tts_kind {
+    let base_audio = match s.tts_kind {
         TtsKind::Auto => match crate::tts_router::effective_kind(s) {
             TtsKind::VoxCpm => voxcpm(s, voice, text, lang, slow).await,
             _ => {
@@ -422,10 +422,139 @@ pub async fn tts(
             }
         }
         TtsKind::GptSovits => gpt_sovits(s, text, lang, slow).await,
+    };
+
+    let bytes = base_audio?;
+    if s.rvc_enabled {
+        apply_rvc(s, &bytes).await
+    } else {
+        Ok(bytes)
     }
 }
 
 pub const EMBEDDED_TTS_CLI: &str = include_str!("../../tools/tts_cli.py");
+pub const EMBEDDED_RVC_CLI: &str = include_str!("../../tools/rvc_cli.py");
+
+pub fn ensure_rvc_cli_script() -> Result<PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        for dir in cwd.ancestors() {
+            let p = dir.join("tools").join("rvc_cli.py");
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p = parent.join("tools").join("rvc_cli.py");
+            if p.exists() {
+                return Ok(p);
+            }
+            let p_flat = parent.join("rvc_cli.py");
+            if p_flat.exists() {
+                return Ok(p_flat);
+            }
+            let p_res = parent.join("resources").join("tools").join("rvc_cli.py");
+            if p_res.exists() {
+                return Ok(p_res);
+            }
+        }
+        for dir in exe.ancestors() {
+            let p = dir.join("tools").join("rvc_cli.py");
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    let dev_fallback = PathBuf::from(r"D:\videogen\tools\rvc_cli.py");
+    if dev_fallback.exists() {
+        return Ok(dev_fallback);
+    }
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let app_dir = PathBuf::from(&local_app_data).join("V-Studio").join("tools");
+        let _ = std::fs::create_dir_all(&app_dir);
+        let script = app_dir.join("rvc_cli.py");
+        if std::fs::write(&script, EMBEDDED_RVC_CLI).is_ok() {
+            return Ok(script);
+        }
+    }
+    let temp_tools = std::env::temp_dir().join("vstudio_tools");
+    let _ = std::fs::create_dir_all(&temp_tools);
+    let temp_script = temp_tools.join("rvc_cli.py");
+    std::fs::write(&temp_script, EMBEDDED_RVC_CLI)?;
+    Ok(temp_script)
+}
+
+/// Runs RVC v2 conversion on input audio bytes using tools/rvc_cli.py
+pub async fn apply_rvc(s: &Settings, input_bytes: &[u8]) -> Result<Vec<u8>> {
+    if !s.rvc_enabled {
+        return Ok(input_bytes.to_vec());
+    }
+
+    if s.rvc_model_path.trim().is_empty() && (s.rvc_mode != "server" || s.rvc_server_url.trim().is_empty()) {
+        return Ok(input_bytes.to_vec());
+    }
+
+    let temp_dir = std::env::temp_dir().join("videogen_rvc");
+    let _ = tokio::fs::create_dir_all(&temp_dir).await;
+    let run_id = uuid::Uuid::new_v4();
+    let in_file = temp_dir.join(format!("in_{run_id}.wav"));
+    let out_file = temp_dir.join(format!("out_{run_id}.wav"));
+
+    tokio::fs::write(&in_file, input_bytes).await?;
+
+    let py = find_python();
+    let rvc_script = ensure_rvc_cli_script()?;
+
+    let mut cmd = tokio::process::Command::new(&py);
+    cmd.arg(&rvc_script)
+        .arg("--input")
+        .arg(&in_file)
+        .arg("--output")
+        .arg(&out_file)
+        .arg("--pitch")
+        .arg(s.rvc_pitch.to_string())
+        .arg("--f0-method")
+        .arg(&s.rvc_f0_method)
+        .arg("--index-rate")
+        .arg(format!("{:.2}", s.rvc_index_rate))
+        .arg("--protect")
+        .arg(format!("{:.2}", s.rvc_protect));
+
+    if !s.rvc_model_path.trim().is_empty() {
+        cmd.arg("--model").arg(s.rvc_model_path.trim());
+    }
+    if !s.rvc_index_path.trim().is_empty() {
+        cmd.arg("--index").arg(s.rvc_index_path.trim());
+    }
+    if s.rvc_mode == "server" && !s.rvc_server_url.trim().is_empty() {
+        cmd.arg("--server-url").arg(s.rvc_server_url.trim());
+    }
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().await?;
+    let _ = tokio::fs::remove_file(&in_file).await;
+
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        let out_msg = String::from_utf8_lossy(&output.stdout);
+        let _ = tokio::fs::remove_file(&out_file).await;
+        let combined = if !err_msg.trim().is_empty() { err_msg.trim() } else { out_msg.trim() };
+        bail!("RVC v2 conversion failed: {combined}");
+    }
+
+    let result_bytes = tokio::fs::read(&out_file).await;
+    let _ = tokio::fs::remove_file(&out_file).await;
+
+    match result_bytes {
+        Ok(b) if !b.is_empty() => Ok(b),
+        _ => bail!("RVC v2 produced empty audio output"),
+    }
+}
 
 fn ensure_tts_cli_script() -> Result<PathBuf> {
     // 1. Check current working directory and ancestors
@@ -486,7 +615,7 @@ fn ensure_tts_cli_script() -> Result<PathBuf> {
     Ok(temp_script)
 }
 
-fn find_python() -> PathBuf {
+pub fn find_python() -> PathBuf {
     // 1. Check exe-adjacent portable venv (.venv-voxcpm, python, etc.)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {

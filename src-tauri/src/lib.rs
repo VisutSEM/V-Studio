@@ -80,6 +80,8 @@ pub fn run() {
             commands::check_for_updates,
             commands::download_update_installer,
             commands::run_installer_and_exit,
+            commands::list_rvc_models,
+            commands::test_rvc,
             pipeline::generate_script,
             pipeline::get_script_status,
             pipeline::get_all_script_tasks,

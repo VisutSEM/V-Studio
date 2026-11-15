@@ -39,6 +39,22 @@ export interface Settings {
   output_dir: string;
   theme: "system" | "light" | "dark";
   resolution: string;
+  // RVC v2 Voice Conversion
+  rvc_enabled: boolean;
+  rvc_mode: "local" | "server";
+  rvc_server_url: string;
+  rvc_model_path: string;
+  rvc_index_path: string;
+  rvc_pitch: number;
+  rvc_f0_method: "rmvpe" | "pm" | "crepe" | "harvest";
+  rvc_index_rate: number;
+  rvc_protect: number;
+}
+export interface RvcModelInfo {
+  name: string;
+  path: string;
+  index_path: string;
+  size_mb: number;
 }
 export interface SettingsView extends Settings {
   has_llm_key: boolean; has_cf_token: boolean; has_azure_key: boolean; has_kiri_key: boolean;
@@ -197,6 +213,9 @@ export const api = {
     invoke<VoxcpmStatus>("check_voxcpm_health", { url: url ?? null }),
   startVoxcpmServer: () => invoke<void>("start_voxcpm_server"),
   stopVoxcpmServer: () => invoke<void>("stop_voxcpm_server"),
+  listRvcModels: () => invoke<RvcModelInfo[]>("list_rvc_models"),
+  testRvc: (settings?: Settings, text?: string) =>
+    invoke<{ len: number; audio_base64: string; mime: string }>("test_rvc", { settings, text }),
   saveSettings: (
     settings: Settings,
     keys: { llmApiKey?: string | null; cfApiToken?: string | null; azureTtsKey?: string | null; kiriTtsKey?: string | null },
